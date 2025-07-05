@@ -24,6 +24,15 @@ const unsigned long SCREENSAVER_TIMEOUT = 60000;    // Screensaver: 60 seconds
 String deviceId = "";
 unsigned long totalRuntime = 0;
 
+// Forward declarations
+void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color);
+String generateDeviceId();
+void sendDeviceStats();
+bool updateUIConfig();
+bool downloadFirmwareToSD(const char* firmwareUrl);
+bool applyFirmwareFromSD();
+bool isNewerVersion(const char* latestVersion, const char* currentVersion);
+
 // Hardware definitions
 #define XPT2046_IRQ 36
 #define XPT2046_MOSI 32
