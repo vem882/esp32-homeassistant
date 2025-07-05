@@ -17,24 +17,46 @@ jobs:
     
     - name: Install Arduino CLI
       run: |
-        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-        echo "$HOME/bin" >> $GITHUB_PATH
+        # Download and install Arduino CLI
+        wget https://github.com/arduino/arduino-cli/releases/latest/download/arduino-cli_Linux_64bit.tar.gz
+        tar -xzf arduino-cli_Linux_64bit.tar.gz
+        sudo mv arduino-cli /usr/local/bin/
+        arduino-cli version
     
     - name: Setup Arduino CLI
       run: |
+        # Initialize Arduino CLI
+        arduino-cli config init
+        
+        # Update core index
         arduino-cli core update-index
+        
+        # Install ESP32 core
         arduino-cli core install esp32:esp32
+        
+        # Install required libraries
         arduino-cli lib install "TFT_eSPI"
         arduino-cli lib install "XPT2046_Touchscreen"
         arduino-cli lib install "ArduinoJson"
+        
+        # Show installed cores and libraries for debugging
+        echo "Installed cores:"
+        arduino-cli core list
+        echo "Installed libraries:"
+        arduino-cli lib list
     
     - name: Test build
       run: |
         # Create output directory
         mkdir -p build
         
+        # Show sketch structure for debugging
+        echo "Sketch structure:"
+        ls -la sketch_jul3a/
+        
         # Build the sketch
-        arduino-cli compile --fqbn esp32:esp32:esp32 sketch_jul3a/sketch_jul3a.ino --output-dir build
+        echo "Building firmware..."
+        arduino-cli compile --fqbn esp32:esp32:esp32 sketch_jul3a/sketch_jul3a.ino --output-dir build --verbose
         
         # Check if build was successful
         if [ -f "build/sketch_jul3a.ino.bin" ]; then
@@ -45,21 +67,36 @@ jobs:
           # Check if firmware size is reasonable (not too large)
           if [ $FIRMWARE_SIZE -gt 1500000 ]; then
             echo "⚠️  Warning: Firmware size is quite large ($FIRMWARE_SIZE bytes)"
+            echo "Consider optimizing the code or reducing features"
           fi
+          
+          # Save firmware size for summary
+          echo "firmware_size=$FIRMWARE_SIZE" >> $GITHUB_ENV
         else
           echo "❌ Build failed!"
+          echo "Looking for build artifacts..."
+          find build -name "*.bin" -o -name "*.elf" -o -name "*.map" | head -10
           exit 1
         fi
     
     - name: Build Summary
       run: |
-        echo "## Build Test Results" >> $GITHUB_STEP_SUMMARY
-        echo "✅ **Build Status:** Success" >> $GITHUB_STEP_SUMMARY
         if [ -f "build/sketch_jul3a.ino.bin" ]; then
           FIRMWARE_SIZE=$(stat -c%s build/sketch_jul3a.ino.bin)
-          echo "📦 **Firmware Size:** $FIRMWARE_SIZE bytes" >> $GITHUB_STEP_SUMMARY
+        else
+          FIRMWARE_SIZE=0
         fi
+        
+        echo "## Build Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Build Status:** Success" >> $GITHUB_STEP_SUMMARY
+        echo "📦 **Firmware Size:** $FIRMWARE_SIZE bytes" >> $GITHUB_STEP_SUMMARY
         echo "🔧 **Target:** ESP32" >> $GITHUB_STEP_SUMMARY
         echo "📁 **Sketch:** sketch_jul3a/sketch_jul3a.ino" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ $FIRMWARE_SIZE -gt 1500000 ]; then
+          echo "⚠️  **Warning:** Firmware size is quite large. Consider optimization." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ **Size Check:** Firmware size is within reasonable limits." >> $GITHUB_STEP_SUMMARY
+        fi
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "This PR is ready for merge!" >> $GITHUB_STEP_SUMMARY

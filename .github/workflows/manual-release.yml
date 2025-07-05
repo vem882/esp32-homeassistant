@@ -45,16 +45,33 @@ jobs:
     
     - name: Install Arduino CLI
       run: |
-        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-        echo "$HOME/bin" >> $GITHUB_PATH
+        # Download and install Arduino CLI
+        wget https://github.com/arduino/arduino-cli/releases/latest/download/arduino-cli_Linux_64bit.tar.gz
+        tar -xzf arduino-cli_Linux_64bit.tar.gz
+        sudo mv arduino-cli /usr/local/bin/
+        arduino-cli version
     
     - name: Setup Arduino CLI
       run: |
+        # Initialize Arduino CLI
+        arduino-cli config init
+        
+        # Update core index
         arduino-cli core update-index
+        
+        # Install ESP32 core
         arduino-cli core install esp32:esp32
+        
+        # Install required libraries
         arduino-cli lib install "TFT_eSPI"
         arduino-cli lib install "XPT2046_Touchscreen"
         arduino-cli lib install "ArduinoJson"
+        
+        # Show installed cores and libraries for debugging
+        echo "Installed cores:"
+        arduino-cli core list
+        echo "Installed libraries:"
+        arduino-cli lib list
     
     - name: Update firmware version in code
       run: |
@@ -72,19 +89,36 @@ jobs:
         # Create output directory
         mkdir -p build
         
+        # Show sketch structure for debugging
+        echo "Sketch structure:"
+        ls -la sketch_jul3a/
+        
         # Build the sketch
-        arduino-cli compile --fqbn esp32:esp32:esp32 sketch_jul3a/sketch_jul3a.ino --output-dir build
+        echo "Building firmware..."
+        arduino-cli compile --fqbn esp32:esp32:esp32 sketch_jul3a/sketch_jul3a.ino --output-dir build --verbose
         
         # Check if build was successful
         if [ -f "build/sketch_jul3a.ino.bin" ]; then
           echo "Build successful!"
+          ls -la build/
+          
+          # Copy firmware to root directory
           cp build/sketch_jul3a.ino.bin firmware.bin
           
+          # Get firmware size
           FIRMWARE_SIZE=$(stat -c%s firmware.bin)
           echo "Firmware size: $FIRMWARE_SIZE bytes"
+          
+          # Check if firmware size is reasonable
+          if [ $FIRMWARE_SIZE -gt 1500000 ]; then
+            echo "Warning: Firmware size is quite large ($FIRMWARE_SIZE bytes)"
+          fi
+          
+          # Save firmware size for later steps
           echo "firmware_size=$FIRMWARE_SIZE" >> $GITHUB_ENV
         else
-          echo "Build failed!"
+          echo "Build failed! Looking for build artifacts..."
+          find build -name "*.bin" -o -name "*.elf" -o -name "*.map" | head -10
           exit 1
         fi
     
