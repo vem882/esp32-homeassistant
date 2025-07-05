@@ -1089,18 +1089,14 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
   // Skip certificate verification for GitHub
   client.setInsecure();
   
-  // Check available space on SD card
-  uint64_t totalBytes = SD.totalBytes();
-  uint64_t usedBytes = SD.usedBytes();
-  uint64_t freeBytes = totalBytes - usedBytes;
+  // Check SD card availability (skip unreliable space check)
+  Serial.println("Checking SD card availability...");
   
-  Serial.print("SD Card Space - Total: ");
-  Serial.print(totalBytes);
-  Serial.print(", Used: ");
-  Serial.print(usedBytes);
-  Serial.print(", Free: ");
-  Serial.print(freeBytes);
-  Serial.println(" bytes");
+  // Test basic SD card functionality
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD card initialization failed");
+    return false;
+  }
   
   // List SD card contents for debugging
   listSDCardContents();
@@ -1108,42 +1104,32 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
   // Delete old firmware file if exists to free up space
   if (SD.exists("/firmware_new.bin")) {
     File oldFile = SD.open("/firmware_new.bin");
-    size_t oldSize = oldFile.size();
-    oldFile.close();
-    SD.remove("/firmware_new.bin");
-    Serial.print("Deleted old firmware file, freed ");
-    Serial.print(oldSize);
-    Serial.println(" bytes");
-    freeBytes += oldSize;
+    if (oldFile) {
+      size_t oldSize = oldFile.size();
+      oldFile.close();
+      SD.remove("/firmware_new.bin");
+      Serial.print("Deleted old firmware file, freed ");
+      Serial.print(oldSize);
+      Serial.println(" bytes");
+    }
   }
   
-  // Check minimum free space (1.5MB should be enough for most ESP32 firmware)
-  if (freeBytes < 1500000) {
-    Serial.print("Insufficient space on SD card for firmware download. Need at least 1.5MB, have ");
-    Serial.print(freeBytes);
-    Serial.println(" bytes");
-    
-    // Try to free up more space by cleaning up temporary files
-    Serial.println("Attempting to free up space by cleaning temporary files...");
-    
-    // Clean up any temporary files
-    if (SD.exists("/temp.bin")) {
-      SD.remove("/temp.bin");
-      Serial.println("Deleted /temp.bin");
-    }
-    
-    // Re-check space after cleanup
-    usedBytes = SD.usedBytes();
-    freeBytes = totalBytes - usedBytes;
-    Serial.print("After cleanup, free space: ");
-    Serial.print(freeBytes);
-    Serial.println(" bytes");
-    
-    if (freeBytes < 1500000) {
-      Serial.println("Still insufficient space after cleanup");
-      return false;
-    }
+  // Clean up any temporary files
+  if (SD.exists("/temp.bin")) {
+    SD.remove("/temp.bin");
+    Serial.println("Deleted /temp.bin");
   }
+  
+  // Test SD card write capability by creating a small test file
+  File testFile = SD.open("/test_write.tmp", FILE_WRITE);
+  if (!testFile) {
+    Serial.println("SD card write test failed - card may be full or corrupted");
+    return false;
+  }
+  testFile.write("test");
+  testFile.close();
+  SD.remove("/test_write.tmp");
+  Serial.println("SD card write test passed");
   
   http.setTimeout(60000); // 60 second timeout for large file
   http.begin(client, firmwareUrl);
@@ -1159,23 +1145,15 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
     Serial.println(" bytes");
     
     if (contentLength > 0) {
-      // Check if we have enough space for this specific firmware
-      if (contentLength > freeBytes) {
-        Serial.print("Not enough space for this firmware. Need ");
-        Serial.print(contentLength);
-        Serial.print(" bytes, have ");
-        Serial.print(freeBytes);
-        Serial.println(" bytes");
-        http.end();
-        return false;
-      }
-      
-      Serial.print("Firmware size: ");
-      Serial.println(contentLength);
+      // Since SD space functions don't work reliably, we'll try to download
+      // and handle any space issues during the actual write process
+      Serial.print("Attempting to download firmware of size: ");
+      Serial.print(contentLength);
+      Serial.println(" bytes");
       
       File firmwareFile = SD.open("/firmware_new.bin", FILE_WRITE);
       if (!firmwareFile) {
-        Serial.println("Failed to create firmware file on SD card");
+        Serial.println("Failed to create firmware file on SD card - possibly no space");
         http.end();
         return false;
       }
@@ -1226,8 +1204,14 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
             }
             
             if (writtenBytes != readBytes) {
-              Serial.println("Error writing to SD card");
+              Serial.print("Error writing to SD card - wrote ");
+              Serial.print(writtenBytes);
+              Serial.print(" bytes, expected ");
+              Serial.print(readBytes);
+              Serial.println(" bytes");
+              Serial.println("This may indicate SD card is full or corrupted");
               firmwareFile.close();
+              SD.remove("/firmware_new.bin"); // Clean up partial file
               http.end();
               return false;
             }
@@ -1387,9 +1371,36 @@ bool isNewerVersion(const char* latestVersion, const char* currentVersion) {
 // Helper function to list SD card contents for debugging
 void listSDCardContents() {
   Serial.println("=== SD Card Contents ===");
+  
+  // First check if SD card is accessible
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD card not accessible");
+    return;
+  }
+  
   File root = SD.open("/");
   if (!root) {
     Serial.println("Failed to open root directory");
+    // Try to check if specific files exist as fallback
+    Serial.println("Checking for specific files:");
+    if (SD.exists("/config.json")) {
+      File configFile = SD.open("/config.json");
+      if (configFile) {
+        Serial.print("config.json exists (");
+        Serial.print(configFile.size());
+        Serial.println(" bytes)");
+        configFile.close();
+      }
+    }
+    if (SD.exists("/ui_config.json")) {
+      File uiFile = SD.open("/ui_config.json");
+      if (uiFile) {
+        Serial.print("ui_config.json exists (");
+        Serial.print(uiFile.size());
+        Serial.println(" bytes)");
+        uiFile.close();
+      }
+    }
     return;
   }
   
