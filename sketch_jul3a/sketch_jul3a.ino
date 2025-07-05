@@ -139,6 +139,8 @@ private:
     
     if (align == "center") {
       tft.drawCentreString(text, x, y, 2);
+    } else if (align == "right") {
+      tft.drawRightString(text, x, y, 2);
     } else {
       tft.drawString(text, x, y, 2);
     }
@@ -462,6 +464,12 @@ void updateUI() {
     ui.updateElement(currentScreen.c_str(), "wifi_icon", "color", "#FF0000");
   }
   
+  // Update firmware version display
+  if (currentScreen == "main_screen") {
+    String versionText = "v" + String(FIRMWARE_VERSION);
+    ui.updateElement(currentScreen.c_str(), "firmware_version", "text", versionText.c_str());
+  }
+  
   // Re-render screen
   ui.renderScreen(currentScreen.c_str());
 }
@@ -497,20 +505,20 @@ void getTemperature() {
   String url = "http://" + String(config.ha_host) + ":" + String(config.ha_port) + 
                "/api/states/" + String(config.temperature_sensor);
   
-  Serial.print("Getting temperature from: ");
-  Serial.println(url);
+ // Serial.print("Getting temperature from: ");
+ // Serial.println(url);
   
   http.begin(url);
   http.addHeader("Authorization", "Bearer " + String(config.ha_token));
   
   int httpCode = http.GET();
-  Serial.print("HTTP Response Code: ");
-  Serial.println(httpCode);
+ // Serial.print("HTTP Response Code: ");
+ // Serial.println(httpCode);
   
   if (httpCode == 200) {
     String payload = http.getString();
-    Serial.print("Response payload: ");
-    Serial.println(payload);
+ //   Serial.print("Response payload: ");
+ //   Serial.println(payload);
     
     DynamicJsonDocument doc(256);
     DeserializationError error = deserializeJson(doc, payload);
@@ -581,6 +589,9 @@ void setup() {
   Serial.print("Device ID: ");
   Serial.println(deviceId);
   
+  // Update total runtime (load from EEPROM or similar could be added)
+  totalRuntime = millis() / 1000; // Current session start time
+  
   // Send device stats (optional)
   sendDeviceStats();
   
@@ -640,6 +651,15 @@ void loop() {
       // OTA update successful, device will restart
       return;
     }
+  }
+  
+  // Send device statistics every 24 hours (86400000 ms)
+  static unsigned long lastStatsReport = 0;
+  if (millis() - lastStatsReport > 86400000) { // 24 hours
+    lastStatsReport = millis();
+    
+    Serial.println("Sending periodic device statistics...");
+    sendDeviceStats();
   }
   
   delay(50);
@@ -963,34 +983,86 @@ String generateDeviceId() {
 
 // Send device statistics to repository
 void sendDeviceStats() {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, skipping device stats");
+    return;
+  }
   
   HTTPClient http;
+  NetworkClientSecure client;
   String statsUrl = "https://api.github.com/repos/vem882/esp32-homeassistant/issues";
   
+  // Skip certificate verification for GitHub
+  client.setInsecure();
+  
+  // Get current uptime
+  unsigned long currentUptime = millis() / 1000;
+  unsigned long totalUptimeHours = (totalRuntime + currentUptime) / 3600;
+  
   // Create statistics payload
-  DynamicJsonDocument statsDoc(512);
-  statsDoc["title"] = "Device Stats: " + deviceId;
-  statsDoc["body"] = "Device ID: " + deviceId + 
-                     "\nFirmware: " + String(FIRMWARE_VERSION) +
-                     "\nUptime: " + String(millis() / 1000) + " seconds" +
-                     "\nFree Heap: " + String(ESP.getFreeHeap()) + " bytes" +
-                     "\nFlash Size: " + String(ESP.getFlashChipSize()) + " bytes" +
-                     "\nWiFi RSSI: " + String(WiFi.RSSI()) + " dBm" +
-                     "\nLast Boot: " + String(totalRuntime);
+  DynamicJsonDocument statsDoc(1024);
+  statsDoc["title"] = "Device Stats Report: " + deviceId;
+  
+  String body = "**Device Information**\n";
+  body += "- Device ID: `" + deviceId + "`\n";
+  body += "- Firmware Version: `" + String(FIRMWARE_VERSION) + "`\n";
+  body += "- Current Session Uptime: " + String(currentUptime / 3600) + " hours\n";
+  body += "- Total Runtime: " + String(totalUptimeHours) + " hours\n\n";
+  
+  body += "**System Status**\n";
+  body += "- Free Heap: " + String(ESP.getFreeHeap()) + " bytes\n";
+  body += "- Flash Size: " + String(ESP.getFlashChipSize()) + " bytes\n";
+  body += "- CPU Frequency: " + String(ESP.getCpuFreqMHz()) + " MHz\n\n";
+  
+  body += "**Network Information**\n";
+  body += "- WiFi RSSI: " + String(WiFi.RSSI()) + " dBm\n";
+  body += "- IP Address: " + WiFi.localIP().toString() + "\n";
+  body += "- MAC Address: " + WiFi.macAddress() + "\n\n";
+  
+  body += "**Temperature Control**\n";
+  body += "- Current Temperature: " + String(currentTemp) + "°C\n";
+  body += "- Target Temperature: " + String(targetTemp) + "°C\n";
+  body += "- Heating Status: " + String(heating ? "ON" : "OFF") + "\n\n";
+  
+  body += "**Configuration**\n";
+  body += "- Home Assistant Host: " + String(config.ha_host) + ":" + String(config.ha_port) + "\n";
+  body += "- Temperature Sensor: " + String(config.temperature_sensor) + "\n";
+  body += "- Climate Entity: " + String(config.climate_entity) + "\n\n";
+  
+  // Add timestamp
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    char timestamp[64];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S UTC", &timeinfo);
+    body += "**Report Generated:** " + String(timestamp) + "\n";
+  }
+  
+  statsDoc["body"] = body;
   statsDoc["labels"] = JsonArray();
   statsDoc["labels"].add("device-stats");
+  statsDoc["labels"].add("automated-report");
   
   String payload;
   serializeJson(statsDoc, payload);
   
-  http.begin(statsUrl);
+  http.setTimeout(15000);
+  http.begin(client, statsUrl);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("User-Agent", "ESP32-HomeAssistant");
+  http.addHeader("User-Agent", "ESP32-HomeAssistant-" + String(FIRMWARE_VERSION));
   
   int httpCode = http.POST(payload);
-  Serial.print("Device stats sent, response: ");
-  Serial.println(httpCode);
+  
+  if (httpCode == HTTP_CODE_CREATED || httpCode == HTTP_CODE_OK) {
+    Serial.println("Device stats sent successfully");
+  } else {
+    Serial.print("Device stats failed, HTTP code: ");
+    Serial.println(httpCode);
+    if (httpCode > 0) {
+      String response = http.getString();
+      Serial.print("Response: ");
+      Serial.println(response);
+    }
+  }
   
   http.end();
 }

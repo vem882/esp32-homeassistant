@@ -91,6 +91,15 @@
         "text": "-50",
         "font_size": 12,
         "color": "#FFFFFF"
+      },
+      {
+        "type": "label",
+        "name": "firmware_version",
+        "x": 310, "y": 230,
+        "text": "v1.0.0",
+        "font_size": 10,
+        "color": "#888888",
+        "align": "right"
       }
     ]
   },
