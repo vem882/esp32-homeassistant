@@ -1,0 +1,22 @@
+{
+  "wifi": {
+    "ssid": "YourWiFiNetwork",
+    "password": "YourWiFiPassword"
+  },
+  "homeassistant": {
+    "host": "192.168.1.100",
+    "port": 8123,
+    "token": "your_long_lived_access_token_here"
+  },
+  "entities": {
+    "temperature_sensor": "sensor.your_temperature_sensor",
+    "climate_entity": "climate.your_thermostat",
+    "weather_entity": "weather.your_weather_forecast"
+  },
+  "system": {
+    "timezone": "EET-2EEST,M3.5.0/3,M10.5.0/4",
+    "device_name": "ESP32_Thermostat",
+    "update_interval": 30,
+    "screensaver_timeout": 60
+  }
+}

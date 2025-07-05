@@ -1,0 +1,65 @@
+name: ESP32 Build Test
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sketch_jul3a/**'
+      - '.github/workflows/**'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Install Arduino CLI
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+        echo "$HOME/bin" >> $GITHUB_PATH
+    
+    - name: Setup Arduino CLI
+      run: |
+        arduino-cli core update-index
+        arduino-cli core install esp32:esp32
+        arduino-cli lib install "TFT_eSPI"
+        arduino-cli lib install "XPT2046_Touchscreen"
+        arduino-cli lib install "ArduinoJson"
+    
+    - name: Test build
+      run: |
+        # Create output directory
+        mkdir -p build
+        
+        # Build the sketch
+        arduino-cli compile --fqbn esp32:esp32:esp32 sketch_jul3a/sketch_jul3a.ino --output-dir build
+        
+        # Check if build was successful
+        if [ -f "build/sketch_jul3a.ino.bin" ]; then
+          echo "✅ Build successful!"
+          FIRMWARE_SIZE=$(stat -c%s build/sketch_jul3a.ino.bin)
+          echo "Firmware size: $FIRMWARE_SIZE bytes"
+          
+          # Check if firmware size is reasonable (not too large)
+          if [ $FIRMWARE_SIZE -gt 1500000 ]; then
+            echo "⚠️  Warning: Firmware size is quite large ($FIRMWARE_SIZE bytes)"
+          fi
+        else
+          echo "❌ Build failed!"
+          exit 1
+        fi
+    
+    - name: Build Summary
+      run: |
+        echo "## Build Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Build Status:** Success" >> $GITHUB_STEP_SUMMARY
+        if [ -f "build/sketch_jul3a.ino.bin" ]; then
+          FIRMWARE_SIZE=$(stat -c%s build/sketch_jul3a.ino.bin)
+          echo "📦 **Firmware Size:** $FIRMWARE_SIZE bytes" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "🔧 **Target:** ESP32" >> $GITHUB_STEP_SUMMARY
+        echo "📁 **Sketch:** sketch_jul3a/sketch_jul3a.ino" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "This PR is ready for merge!" >> $GITHUB_STEP_SUMMARY

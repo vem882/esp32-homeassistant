@@ -1,0 +1,201 @@
+name: ESP32 Auto Build and Release
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'sketch_jul3a/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sketch_jul3a/**'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Install Arduino CLI
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+        echo "$HOME/bin" >> $GITHUB_PATH
+    
+    - name: Setup Arduino CLI
+      run: |
+        arduino-cli core update-index
+        arduino-cli core install esp32:esp32
+        arduino-cli lib install "TFT_eSPI"
+        arduino-cli lib install "XPT2046_Touchscreen"
+        arduino-cli lib install "ArduinoJson"
+    
+    - name: Generate version number
+      id: version
+      run: |
+        # Get current date and time
+        VERSION_DATE=$(date +'%Y.%m.%d')
+        VERSION_TIME=$(date +'%H%M')
+        
+        # Get short commit hash
+        COMMIT_HASH=$(git rev-parse --short HEAD)
+        
+        # Get commit count since last tag (or since beginning if no tags)
+        COMMIT_COUNT=$(git rev-list --count HEAD)
+        
+        # Generate version: YYYY.MM.DD.BUILDNUMBER
+        VERSION="${VERSION_DATE}.${COMMIT_COUNT}"
+        
+        echo "Generated version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+        echo "build_date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+    
+    - name: Update firmware version in code
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        echo "Updating firmware version to: $VERSION"
+        
+        # Update version in sketch file
+        sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" sketch_jul3a/sketch_jul3a.ino
+        
+        # Verify the change
+        grep "FIRMWARE_VERSION" sketch_jul3a/sketch_jul3a.ino
+    
+    - name: Build firmware
+      run: |
+        # Create output directory
+        mkdir -p build
+        
+        # Build the sketch
+        arduino-cli compile --fqbn esp32:esp32:esp32 sketch_jul3a/sketch_jul3a.ino --output-dir build
+        
+        # Check if build was successful
+        if [ -f "build/sketch_jul3a.ino.bin" ]; then
+          echo "Build successful!"
+          ls -la build/
+          
+          # Copy firmware to root directory
+          cp build/sketch_jul3a.ino.bin firmware.bin
+          
+          # Get firmware size
+          FIRMWARE_SIZE=$(stat -c%s firmware.bin)
+          echo "Firmware size: $FIRMWARE_SIZE bytes"
+          echo "firmware_size=$FIRMWARE_SIZE" >> $GITHUB_ENV
+        else
+          echo "Build failed!"
+          exit 1
+        fi
+    
+    - name: Create version.json
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        COMMIT_HASH="${{ steps.version.outputs.commit_hash }}"
+        BUILD_DATE="${{ steps.version.outputs.build_date }}"
+        FIRMWARE_SIZE="${{ env.firmware_size }}"
+        
+        # Get commit message for release notes
+        COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+        
+        # Create version.json
+        cat > version.json << EOF
+        {
+          "version": "$VERSION",
+          "firmware_url": "https://raw.githubusercontent.com/${{ github.repository }}/main/firmware.bin",
+          "release_notes": "$COMMIT_MSG",
+          "min_version": "1.0.0",
+          "force_update": false,
+          "build_date": "$BUILD_DATE",
+          "commit_hash": "$COMMIT_HASH",
+          "firmware_size": $FIRMWARE_SIZE,
+          "build_number": ${{ github.run_number }}
+        }
+        EOF
+        
+        echo "Created version.json:"
+        cat version.json
+    
+    - name: Setup Git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+    
+    - name: Commit and push changes
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        
+        # Add files to git
+        git add sketch_jul3a/sketch_jul3a.ino
+        git add firmware.bin
+        git add version.json
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Commit changes
+          git commit -m "Auto-build: Release version $VERSION [skip ci]"
+          
+          # Push changes
+          git push origin main
+          
+          echo "Committed and pushed version $VERSION"
+        fi
+    
+    - name: Create GitHub Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.version }}
+        name: Release v${{ steps.version.outputs.version }}
+        body: |
+          ## ESP32 Home Assistant Thermostat - Version ${{ steps.version.outputs.version }}
+          
+          **Build Information:**
+          - Version: ${{ steps.version.outputs.version }}
+          - Commit: ${{ steps.version.outputs.commit_hash }}
+          - Build Date: ${{ steps.version.outputs.build_date }}
+          - Firmware Size: ${{ env.firmware_size }} bytes
+          
+          **Changes:**
+          ${{ github.event.head_commit.message }}
+          
+          **OTA Update:**
+          Devices will automatically update to this version within 6 hours.
+          
+          **Manual Installation:**
+          1. Download `firmware.bin` from the assets below
+          2. Flash to your ESP32 using your preferred method
+          
+          **Configuration:**
+          Make sure your SD card contains the required `config.json` and `ui_config.json` files.
+        files: |
+          firmware.bin
+          version.json
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Build Summary
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit:** ${{ steps.version.outputs.commit_hash }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Date:** ${{ steps.version.outputs.build_date }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Firmware Size:** ${{ env.firmware_size }} bytes" >> $GITHUB_STEP_SUMMARY
+        echo "- **OTA URL:** https://raw.githubusercontent.com/${{ github.repository }}/main/version.json" >> $GITHUB_STEP_SUMMARY
+        echo "- **Firmware URL:** https://raw.githubusercontent.com/${{ github.repository }}/main/firmware.bin" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Files Updated:" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ sketch_jul3a/sketch_jul3a.ino (version updated)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ firmware.bin (compiled)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ version.json (created)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Devices will automatically update within 6 hours!" >> $GITHUB_STEP_SUMMARY

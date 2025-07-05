@@ -1,0 +1,190 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.2.3)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes'
+        required: false
+        default: 'Manual release'
+        type: string
+      force_update:
+        description: 'Force update on all devices'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  manual-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Validate version format
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Error: Version must be in format X.Y.Z (e.g., 1.2.3)"
+          exit 1
+        fi
+        echo "Version format is valid: $VERSION"
+    
+    - name: Install Arduino CLI
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+        echo "$HOME/bin" >> $GITHUB_PATH
+    
+    - name: Setup Arduino CLI
+      run: |
+        arduino-cli core update-index
+        arduino-cli core install esp32:esp32
+        arduino-cli lib install "TFT_eSPI"
+        arduino-cli lib install "XPT2046_Touchscreen"
+        arduino-cli lib install "ArduinoJson"
+    
+    - name: Update firmware version in code
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        echo "Updating firmware version to: $VERSION"
+        
+        # Update version in sketch file
+        sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" sketch_jul3a/sketch_jul3a.ino
+        
+        # Verify the change
+        grep "FIRMWARE_VERSION" sketch_jul3a/sketch_jul3a.ino
+    
+    - name: Build firmware
+      run: |
+        # Create output directory
+        mkdir -p build
+        
+        # Build the sketch
+        arduino-cli compile --fqbn esp32:esp32:esp32 sketch_jul3a/sketch_jul3a.ino --output-dir build
+        
+        # Check if build was successful
+        if [ -f "build/sketch_jul3a.ino.bin" ]; then
+          echo "Build successful!"
+          cp build/sketch_jul3a.ino.bin firmware.bin
+          
+          FIRMWARE_SIZE=$(stat -c%s firmware.bin)
+          echo "Firmware size: $FIRMWARE_SIZE bytes"
+          echo "firmware_size=$FIRMWARE_SIZE" >> $GITHUB_ENV
+        else
+          echo "Build failed!"
+          exit 1
+        fi
+    
+    - name: Create version.json
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
+        FORCE_UPDATE="${{ github.event.inputs.force_update }}"
+        FIRMWARE_SIZE=$(stat -c%s firmware.bin)
+        BUILD_DATE=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+        COMMIT_HASH=$(git rev-parse --short HEAD)
+        
+        # Save firmware size for later steps
+        echo "firmware_size=$FIRMWARE_SIZE" >> $GITHUB_ENV
+        
+        # Create version.json
+        cat > version.json << EOF
+        {
+          "version": "$VERSION",
+          "firmware_url": "https://raw.githubusercontent.com/${{ github.repository }}/main/firmware.bin",
+          "release_notes": "$RELEASE_NOTES",
+          "min_version": "1.0.0",
+          "force_update": $FORCE_UPDATE,
+          "build_date": "$BUILD_DATE",
+          "commit_hash": "$COMMIT_HASH",
+          "firmware_size": $FIRMWARE_SIZE,
+          "build_number": ${{ github.run_number }},
+          "release_type": "manual"
+        }
+        EOF
+        
+        echo "Created version.json:"
+        cat version.json
+    
+    - name: Setup Git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+    
+    - name: Commit and push changes
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        
+        # Add files to git
+        git add sketch_jul3a/sketch_jul3a.ino
+        git add firmware.bin
+        git add version.json
+        
+        # Commit changes
+        git commit -m "Manual release: Version $VERSION [skip ci]"
+        
+        # Push changes
+        git push origin main
+        
+        echo "Committed and pushed version $VERSION"
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ github.event.inputs.version }}
+        name: Release v${{ github.event.inputs.version }}
+        body: |
+          ## ESP32 Home Assistant Thermostat - Version ${{ github.event.inputs.version }}
+          
+          **Release Type:** Manual Release
+          
+          **Build Information:**
+          - Version: ${{ github.event.inputs.version }}
+          - Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          - Firmware Size: $(stat -c%s firmware.bin) bytes
+          - Force Update: ${{ github.event.inputs.force_update }}
+          
+          **Release Notes:**
+          ${{ github.event.inputs.release_notes }}
+          
+          **OTA Update:**
+          Devices will automatically update to this version within 6 hours.
+          ${{ github.event.inputs.force_update == 'true' && 'This is a FORCED update - all devices will update regardless of version.' || '' }}
+          
+          **Manual Installation:**
+          1. Download `firmware.bin` from the assets below
+          2. Flash to your ESP32 using your preferred method
+        files: |
+          firmware.bin
+          version.json
+        draft: false
+        prerelease: ${{ github.event.inputs.prerelease }}
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Release Summary
+      run: |
+        FIRMWARE_SIZE=$(stat -c%s firmware.bin)
+        echo "## Manual Release Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version:** ${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Release Notes:** ${{ github.event.inputs.release_notes }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Force Update:** ${{ github.event.inputs.force_update }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Pre-release:** ${{ github.event.inputs.prerelease }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Firmware Size:** $FIRMWARE_SIZE bytes" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🚀 Release Created Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "Devices will automatically update within 6 hours." >> $GITHUB_STEP_SUMMARY

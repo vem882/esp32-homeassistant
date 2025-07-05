@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html><head>
+<title>Configuration Saved</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.container { text-align: center; background: rgba(255,255,255,0.1); padding: 40px; border-radius: 20px; backdrop-filter: blur(10px); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+h1 { font-size: 3em; margin-bottom: 20px; animation: bounce 2s infinite; }
+p { font-size: 1.3em; margin: 20px 0; }
+.checkmark { font-size: 5em; color: #2ecc71; animation: pulse 2s infinite; }
+@keyframes bounce { 0%, 20%, 50%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-10px); } 60% { transform: translateY(-5px); } }
+@keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+</style>
+</head><body>
+<div class="container">
+<div class="checkmark">✅</div>
+<h1>Configuration Saved!</h1>
+<p>Your ESP32 thermostat is now configured and will restart to connect to your network.</p>
+<p>Please wait a moment while the device reboots...</p>
+<p><small>You can close this browser window.</small></p>
+</div>
+<script>
+setTimeout(() => {
+  document.body.innerHTML = '<div class="container"><h1>🔄 Restarting...</h1><p>Device is rebooting. Please wait...</p></div>';
+}, 3000);
+</script>
+</body></html>
