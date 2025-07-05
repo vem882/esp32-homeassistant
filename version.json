@@ -1,11 +1,11 @@
 {
-  "version": "2025.07.05.17",
+  "version": "2025.07.05.20",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Add forward declarations for utility functions",
+  "release_notes": "Merge branch 'main' of https://github.com/vem882/esp32-homeassistant",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-07-05 18:45:56 UTC",
-  "commit_hash": "ab25ed6",
-  "firmware_size": 1156368,
-  "build_number": 9
+  "build_date": "2025-07-05 19:05:50 UTC",
+  "commit_hash": "ba8a523",
+  "firmware_size": 1157936,
+  "build_number": 10
 }
