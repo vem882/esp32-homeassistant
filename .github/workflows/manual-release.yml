@@ -23,6 +23,12 @@ on:
         default: false
         type: boolean
 
+# Add permissions for the workflow
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
 jobs:
   manual-release:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-name: ESP32 Auto Build and Release
+name: ESP32 Build and Release (No Push)
 
 on:
   push:
@@ -6,12 +6,8 @@ on:
     paths:
       - 'sketch_jul3a/**'
       - '.github/workflows/**'
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'sketch_jul3a/**'
+  workflow_dispatch:
 
-# Add permissions for the workflow
 permissions:
   contents: write
   packages: write
@@ -26,7 +22,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Install Arduino CLI
       run: |
@@ -79,12 +74,12 @@ jobs:
         echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
         echo "build_date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
     
-    - name: Update firmware version in code
+    - name: Update firmware version in code (temporary)
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         echo "Updating firmware version to: $VERSION"
         
-        # Update version in sketch file
+        # Update version in sketch file (temporary, not committed)
         sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" sketch_jul3a/sketch_jul3a.ino
         
         # Verify the change
@@ -108,11 +103,12 @@ jobs:
           echo "Build successful!"
           ls -la build/
           
-          # Copy firmware to root directory
-          cp build/sketch_jul3a.ino.bin firmware.bin
+          # Copy firmware to release directory
+          mkdir -p release
+          cp build/sketch_jul3a.ino.bin release/firmware.bin
           
           # Get firmware size
-          FIRMWARE_SIZE=$(stat -c%s firmware.bin)
+          FIRMWARE_SIZE=$(stat -c%s release/firmware.bin)
           echo "Firmware size: $FIRMWARE_SIZE bytes"
           
           # Check if firmware size is reasonable
@@ -128,63 +124,34 @@ jobs:
           exit 1
         fi
     
-    - name: Create version.json
+    - name: Create version.json for release
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         COMMIT_HASH="${{ steps.version.outputs.commit_hash }}"
         BUILD_DATE="${{ steps.version.outputs.build_date }}"
-        FIRMWARE_SIZE=$(stat -c%s firmware.bin)
+        FIRMWARE_SIZE=$(stat -c%s release/firmware.bin)
         
         # Get commit message for release notes
         COMMIT_MSG=$(git log -1 --pretty=format:"%s")
         
-        # Save firmware size for later steps
-        echo "firmware_size=$FIRMWARE_SIZE" >> $GITHUB_ENV
-        
-        # Create version.json
-        cat > version.json << EOF
+        # Create version.json for release
+        cat > release/version.json << EOF
         {
           "version": "$VERSION",
-          "firmware_url": "https://raw.githubusercontent.com/${{ github.repository }}/main/firmware.bin",
+          "firmware_url": "https://github.com/${{ github.repository }}/releases/download/v$VERSION/firmware.bin",
           "release_notes": "$COMMIT_MSG",
           "min_version": "1.0.0",
           "force_update": false,
           "build_date": "$BUILD_DATE",
           "commit_hash": "$COMMIT_HASH",
           "firmware_size": $FIRMWARE_SIZE,
-          "build_number": ${{ github.run_number }}
+          "build_number": ${{ github.run_number }},
+          "release_type": "automatic"
         }
         EOF
         
-        echo "Created version.json:"
-        cat version.json
-    
-    - name: Setup Git
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-    
-    - name: Commit and push changes
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        
-        # Add files to git
-        git add sketch_jul3a/sketch_jul3a.ino
-        git add firmware.bin
-        git add version.json
-        
-        # Check if there are changes to commit
-        if git diff --staged --quiet; then
-          echo "No changes to commit"
-        else
-          # Commit changes
-          git commit -m "Auto-build: Release version $VERSION [skip ci]"
-          
-          # Push changes
-          git push origin main
-          
-          echo "Committed and pushed version $VERSION"
-        fi
+        echo "Created version.json for release:"
+        cat release/version.json
     
     - name: Create GitHub Release
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -199,23 +166,35 @@ jobs:
           - Version: ${{ steps.version.outputs.version }}
           - Commit: ${{ steps.version.outputs.commit_hash }}
           - Build Date: ${{ steps.version.outputs.build_date }}
-          - Firmware Size: $(stat -c%s firmware.bin) bytes
+          - Firmware Size: $(stat -c%s release/firmware.bin) bytes
           
           **Changes:**
           ${{ github.event.head_commit.message }}
           
           **OTA Update:**
-          Devices will automatically update to this version within 6 hours.
+          Devices configured with this release URL will automatically update.
           
-          **Manual Installation:**
+          **Installation Instructions:**
+          
+          ### Method 1: Update your device's OTA URL (Recommended)
+          Update your ESP32 code to use this release's firmware URL:
+          ```cpp
+          #define OTA_UPDATE_URL "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/version.json"
+          #define OTA_FIRMWARE_URL "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/firmware.bin"
+          ```
+          
+          ### Method 2: Manual Installation
           1. Download `firmware.bin` from the assets below
           2. Flash to your ESP32 using your preferred method
           
           **Configuration:**
           Make sure your SD card contains the required `config.json` and `ui_config.json` files.
+          
+          **Source Code:**
+          The source code for this build is available in commit [${{ steps.version.outputs.commit_hash }}](https://github.com/${{ github.repository }}/commit/${{ steps.version.outputs.commit_hash }})
         files: |
-          firmware.bin
-          version.json
+          release/firmware.bin
+          release/version.json
         draft: false
         prerelease: false
         generate_release_notes: true
@@ -224,18 +203,18 @@ jobs:
     
     - name: Build Summary
       run: |
-        FIRMWARE_SIZE=$(stat -c%s firmware.bin)
+        FIRMWARE_SIZE=$(stat -c%s release/firmware.bin)
         echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
         echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit:** ${{ steps.version.outputs.commit_hash }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Date:** ${{ steps.version.outputs.build_date }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Firmware Size:** $FIRMWARE_SIZE bytes" >> $GITHUB_STEP_SUMMARY
-        echo "- **OTA URL:** https://raw.githubusercontent.com/${{ github.repository }}/main/version.json" >> $GITHUB_STEP_SUMMARY
-        echo "- **Firmware URL:** https://raw.githubusercontent.com/${{ github.repository }}/main/firmware.bin" >> $GITHUB_STEP_SUMMARY
+        echo "- **Release URL:** https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Firmware URL:** https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/firmware.bin" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Files Updated:" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ sketch_jul3a/sketch_jul3a.ino (version updated)" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ firmware.bin (compiled)" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ version.json (created)" >> $GITHUB_STEP_SUMMARY
+        echo "### 🚀 Release Created Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ firmware.bin (compiled and released)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ version.json (created for this release)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Devices will automatically update within 6 hours!" >> $GITHUB_STEP_SUMMARY
+        echo "**Note:** This workflow creates releases without modifying the source repository." >> $GITHUB_STEP_SUMMARY
+        echo "Each release has its own firmware and version.json files." >> $GITHUB_STEP_SUMMARY
