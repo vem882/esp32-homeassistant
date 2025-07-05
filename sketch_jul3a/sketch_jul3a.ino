@@ -11,7 +11,7 @@
 #include <Update.h>
 
 // Firmware version and OTA configuration
-#define FIRMWARE_VERSION "2025.07.05.21"
+#define FIRMWARE_VERSION "2025.07.05.23"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
