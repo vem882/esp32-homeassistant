@@ -11,7 +11,7 @@
 #include <Update.h>
 
 // Firmware version and OTA configuration
-#define FIRMWARE_VERSION "2025.07.05.31"
+#define FIRMWARE_VERSION "2025.07.05.32"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
@@ -34,6 +34,7 @@ bool downloadFirmwareToSD(const char* firmwareUrl);
 bool applyFirmwareFromSD();
 bool isNewerVersion(const char* latestVersion, const char* currentVersion);
 void listSDCardContents();
+void listIconsDirectory();
 
 // Hardware definitions
 #define XPT2046_IRQ 36
@@ -554,16 +555,51 @@ void setup() {
   Serial.println("=== ESP32 Thermostat Starting ===");
   
   // Initialize hardware
+  Serial.println("Initializing SD card...");
   if (!SD.begin(SD_CS)) {
     Serial.println("ERROR: SD Card initialization failed!");
+    Serial.println("Please check:");
+    Serial.println("  - SD card is properly inserted");
+    Serial.println("  - SD card is not write-protected");
+    Serial.println("  - SD card is formatted (FAT32 recommended)");
+    Serial.println("  - Wiring connections are correct");
     showError("SD CARD ERROR");
   }
   Serial.println("SD Card initialized successfully");
+  
+  // Test SD card read/write capability
+  Serial.println("Testing SD card functionality...");
+  File testFile = SD.open("/sd_test.tmp", FILE_WRITE);
+  if (testFile) {
+    testFile.println("SD card test");
+    testFile.close();
+    Serial.println("SD card write test: PASSED");
+    
+    // Test read back
+    testFile = SD.open("/sd_test.tmp", FILE_READ);
+    if (testFile) {
+      String testContent = testFile.readString();
+      testFile.close();
+      SD.remove("/sd_test.tmp");
+      if (testContent.indexOf("SD card test") >= 0) {
+        Serial.println("SD card read test: PASSED");
+      } else {
+        Serial.println("SD card read test: FAILED - content mismatch");
+      }
+    } else {
+      Serial.println("SD card read test: FAILED - could not read file");
+    }
+  } else {
+    Serial.println("SD card write test: FAILED - card may be write-protected");
+  }
   
   // Load configurations
   Serial.println("Loading configuration...");
   loadConfig();
   loadUIConfig();
+  
+  // Debug: List icons directory
+  listIconsDirectory();
   
   // Initialize display
   tft.init();
@@ -931,44 +967,54 @@ void showOTAError(const char* error) {
 void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
   String iconPath = "/icons/" + String(iconName) + ".svg";
   
+  Serial.print("Drawing icon: ");
+  Serial.print(iconName);
+  Serial.print(" at ");
+  Serial.print(iconPath);
+  
   if (SD.exists(iconPath)) {
+    Serial.println(" (file exists)");
+    
     // Simple SVG parsing for basic shapes
     File svgFile = SD.open(iconPath);
     if (svgFile) {
       String svgContent = svgFile.readString();
       svgFile.close();
       
-      // WiFi icons
+      Serial.print("SVG content length: ");
+      Serial.println(svgContent.length());
+      
+      // WiFi icons - use hardcoded drawing for better performance
       if (String(iconName).indexOf("wifi") >= 0) {
         if (String(iconName) == "wifi_full") {
           // Draw full WiFi signal (3 arcs)
-          tft.drawCircle(x + size/2, y + size, size/4, color);
-          tft.drawCircle(x + size/2, y + size, size/2, color);
-          tft.drawCircle(x + size/2, y + size, 3*size/4, color);
-          tft.fillCircle(x + size/2, y + size, 2, color);
+          tft.drawCircle(x + size/2, y + size - 4, size/4, color);
+          tft.drawCircle(x + size/2, y + size - 4, size/2, color);
+          tft.drawCircle(x + size/2, y + size - 4, 3*size/4, color);
+          tft.fillCircle(x + size/2, y + size - 4, 2, color);
         } else if (String(iconName) == "wifi_good") {
           // Draw good WiFi signal (2 arcs)
-          tft.drawCircle(x + size/2, y + size, size/4, color);
-          tft.drawCircle(x + size/2, y + size, size/2, color);
-          tft.fillCircle(x + size/2, y + size, 2, color);
+          tft.drawCircle(x + size/2, y + size - 4, size/4, color);
+          tft.drawCircle(x + size/2, y + size - 4, size/2, color);
+          tft.fillCircle(x + size/2, y + size - 4, 2, color);
         } else if (String(iconName) == "wifi_weak") {
           // Draw weak WiFi signal (1 arc)
-          tft.drawCircle(x + size/2, y + size, size/4, color);
-          tft.fillCircle(x + size/2, y + size, 2, color);
+          tft.drawCircle(x + size/2, y + size - 4, size/4, color);
+          tft.fillCircle(x + size/2, y + size - 4, 2, color);
         } else if (String(iconName) == "wifi_poor") {
           // Draw poor WiFi signal (just dot)
-          tft.fillCircle(x + size/2, y + size, 2, color);
+          tft.fillCircle(x + size/2, y + size - 4, 2, color);
         } else if (String(iconName) == "wifi_off") {
           // Draw WiFi off (X mark)
-          tft.drawLine(x, y, x + size, y + size, color);
-          tft.drawLine(x + size, y, x, y + size, color);
+          tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, color);
+          tft.drawLine(x + size - 2, y + 2, x + 2, y + size - 2, color);
         }
       }
       // Thermometer icon
       else if (String(iconName) == "thermometer") {
         // Draw simple thermometer
-        tft.drawRect(x + size/2 - 2, y, 4, size - 4, color);
-        tft.fillCircle(x + size/2, y + size - 2, 3, color);
+        tft.drawRect(x + size/2 - 2, y + 2, 4, size - 8, color);
+        tft.fillCircle(x + size/2, y + size - 4, 4, color);
       }
       // Basic SVG circle parsing (simplified)
       else if (svgContent.indexOf("<circle") >= 0) {
@@ -985,8 +1031,14 @@ void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
         tft.drawLine(x, y, x + size, y + size, color);
         tft.drawLine(x + size, y, x, y + size, color);
       }
+    } else {
+      Serial.println(" (could not open file)");
+      // Icon file exists but can't be opened, draw placeholder
+      tft.drawRect(x, y, size, size, TFT_YELLOW);
+      tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, TFT_YELLOW);
     }
   } else {
+    Serial.println(" (file not found)");
     // Icon not found, draw placeholder
     tft.drawRect(x, y, size, size, TFT_RED);
     tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, TFT_RED);
@@ -1121,14 +1173,38 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
   }
   
   // Test SD card write capability by creating a small test file
+  Serial.println("Testing SD card write capability...");
   File testFile = SD.open("/test_write.tmp", FILE_WRITE);
   if (!testFile) {
-    Serial.println("SD card write test failed - card may be full or corrupted");
+    Serial.println("SD card write test failed - card may be write-protected or corrupted");
+    Serial.println("OTA update will be skipped due to write protection");
     return false;
   }
-  testFile.print("test");
+  
+  size_t bytesWritten = testFile.print("test");
   testFile.close();
+  
+  if (bytesWritten == 0) {
+    Serial.println("SD card write test failed - could not write data");
+    return false;
+  }
+  
+  // Verify the file was written correctly
+  File readTestFile = SD.open("/test_write.tmp", FILE_READ);
+  if (!readTestFile) {
+    Serial.println("SD card write test failed - could not read back test file");
+    return false;
+  }
+  
+  String testContent = readTestFile.readString();
+  readTestFile.close();
   SD.remove("/test_write.tmp");
+  
+  if (testContent != "test") {
+    Serial.println("SD card write test failed - data corruption detected");
+    return false;
+  }
+  
   Serial.println("SD card write test passed");
   
   http.setTimeout(60000); // 60 second timeout for large file
@@ -1420,4 +1496,43 @@ void listSDCardContents() {
   }
   root.close();
   Serial.println("=== End SD Card Contents ===");
+}
+
+// Debug function to list icons directory
+void listIconsDirectory() {
+  Serial.println("=== Icons Directory Contents ===");
+  
+  if (!SD.exists("/icons")) {
+    Serial.println("Icons directory does not exist");
+    return;
+  }
+  
+  File iconsDir = SD.open("/icons");
+  if (!iconsDir) {
+    Serial.println("Failed to open icons directory");
+    return;
+  }
+  
+  if (!iconsDir.isDirectory()) {
+    Serial.println("Icons path is not a directory");
+    iconsDir.close();
+    return;
+  }
+  
+  File file = iconsDir.openNextFile();
+  while (file) {
+    if (file.isDirectory()) {
+      Serial.print("DIR: ");
+      Serial.println(file.name());
+    } else {
+      Serial.print("ICON: ");
+      Serial.print(file.name());
+      Serial.print(" (");
+      Serial.print(file.size());
+      Serial.println(" bytes)");
+    }
+    file = iconsDir.openNextFile();
+  }
+  iconsDir.close();
+  Serial.println("=== End Icons Directory ===");
 }

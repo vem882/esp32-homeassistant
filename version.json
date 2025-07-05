@@ -1,11 +1,11 @@
 {
-  "version": "2025.07.05.31",
+  "version": "2025.07.05.32",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Fixed SD card space detection issues for reliable OTA updates",
+  "release_notes": "Fixed duplicate function declarations and enhanced SD card debugging",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-07-05 19:47:05 UTC",
+  "build_date": "2025-07-05 21:30:00 UTC",
   "commit_hash": "64b0c0d",
   "firmware_size": 1158832,
-  "build_number": 14
+  "build_number": 15
 }
