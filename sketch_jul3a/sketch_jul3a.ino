@@ -1126,7 +1126,7 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
     Serial.println("SD card write test failed - card may be full or corrupted");
     return false;
   }
-  testFile.write("test");
+  testFile.print("test");
   testFile.close();
   SD.remove("/test_write.tmp");
   Serial.println("SD card write test passed");
