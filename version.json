@@ -1,11 +1,11 @@
 {
-  "version": "2025.07.05.7",
+  "version": "2025.07.05.10",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Add workflow permissions and no-push release option",
+  "release_notes": "Merge branch 'main' of https://github.com/vem882/esp32-homeassistant",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-07-05 01:12:24 UTC",
-  "commit_hash": "358a17b",
+  "build_date": "2025-07-05 01:28:04 UTC",
+  "commit_hash": "1e64ad1",
   "firmware_size": 1149152,
-  "build_number": 5
+  "build_number": 6
 }
