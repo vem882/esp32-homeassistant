@@ -25,8 +25,8 @@ jobs:
     - name: Install Arduino CLI
       run: |
         # Download and install Arduino CLI
-        wget https://github.com/arduino/arduino-cli/releases/latest/download/arduino-cli_Linux_64bit.tar.gz
-        tar -xzf arduino-cli_Linux_64bit.tar.gz
+        wget https://github.com/arduino/arduino-cli/releases/download/v1.2.2/arduino-cli_1.2.2_Linux_64bit.tar.gz
+        tar -xzf arduino-cli_1.2.2_Linux_64bit.tar.gz
         sudo mv arduino-cli /usr/local/bin/
         arduino-cli version
     
