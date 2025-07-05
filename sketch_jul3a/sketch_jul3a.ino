@@ -592,8 +592,19 @@ void setup() {
   // Update total runtime (load from EEPROM or similar could be added)
   totalRuntime = millis() / 1000; // Current session start time
   
-  // Send device stats (optional)
+  // Send device stats (optional, non-blocking)
+  Serial.println("Sending device stats (optional)...");
   sendDeviceStats();
+  
+  // Check for OTA updates immediately on boot
+  Serial.println("=== BOOT OTA CHECK STARTING ===");
+  Serial.println("Checking for OTA updates on boot...");
+  if (checkForOTAUpdate()) {
+    // OTA update successful, device will restart
+    Serial.println("OTA update completed, restarting...");
+    return;
+  }
+  Serial.println("=== BOOT OTA CHECK COMPLETED ===");
   
   // Initial data
   getTemperature();
@@ -788,7 +799,9 @@ bool checkForOTAUpdate() {
   HTTPClient http;
   NetworkClientSecure client;
   
-  Serial.println("Checking for OTA update...");
+  Serial.println("=== CHECKING FOR OTA UPDATE ===");
+  Serial.print("Checking URL: ");
+  Serial.println(OTA_UPDATE_URL);
   
   // Skip certificate verification for GitHub
   client.setInsecure();
@@ -799,6 +812,8 @@ bool checkForOTAUpdate() {
   http.addHeader("User-Agent", "ESP32-HomeAssistant");
   
   int httpCode = http.GET();
+  Serial.print("HTTP Response Code: ");
+  Serial.println(httpCode);
   
   if (httpCode == HTTP_CODE_OK) {
     String payload = http.getString();
@@ -847,6 +862,7 @@ bool checkForOTAUpdate() {
   }
   
   http.end();
+  Serial.println("=== OTA CHECK COMPLETED ===");
   return false;
 }
 
@@ -988,83 +1004,34 @@ void sendDeviceStats() {
     return;
   }
   
-  HTTPClient http;
-  NetworkClientSecure client;
-  String statsUrl = "https://api.github.com/repos/vem882/esp32-homeassistant/issues";
+  // Note: GitHub API requires authentication to create issues
+  // For now, we'll just log the stats locally
+  Serial.println("=== DEVICE STATISTICS ===");
+  Serial.print("Device ID: ");
+  Serial.println(deviceId);
+  Serial.print("Firmware Version: ");
+  Serial.println(FIRMWARE_VERSION);
+  Serial.print("Current Session Uptime: ");
+  Serial.print(millis() / 1000 / 3600);
+  Serial.println(" hours");
+  Serial.print("Free Heap: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
+  Serial.print("WiFi RSSI: ");
+  Serial.print(WiFi.RSSI());
+  Serial.println(" dBm");
+  Serial.print("Current Temperature: ");
+  Serial.print(currentTemp);
+  Serial.println("°C");
+  Serial.print("Target Temperature: ");
+  Serial.print(targetTemp);
+  Serial.println("°C");
+  Serial.print("Heating Status: ");
+  Serial.println(heating ? "ON" : "OFF");
+  Serial.println("=== END DEVICE STATISTICS ===");
   
-  // Skip certificate verification for GitHub
-  client.setInsecure();
-  
-  // Get current uptime
-  unsigned long currentUptime = millis() / 1000;
-  unsigned long totalUptimeHours = (totalRuntime + currentUptime) / 3600;
-  
-  // Create statistics payload
-  DynamicJsonDocument statsDoc(1024);
-  statsDoc["title"] = "Device Stats Report: " + deviceId;
-  
-  String body = "**Device Information**\n";
-  body += "- Device ID: `" + deviceId + "`\n";
-  body += "- Firmware Version: `" + String(FIRMWARE_VERSION) + "`\n";
-  body += "- Current Session Uptime: " + String(currentUptime / 3600) + " hours\n";
-  body += "- Total Runtime: " + String(totalUptimeHours) + " hours\n\n";
-  
-  body += "**System Status**\n";
-  body += "- Free Heap: " + String(ESP.getFreeHeap()) + " bytes\n";
-  body += "- Flash Size: " + String(ESP.getFlashChipSize()) + " bytes\n";
-  body += "- CPU Frequency: " + String(ESP.getCpuFreqMHz()) + " MHz\n\n";
-  
-  body += "**Network Information**\n";
-  body += "- WiFi RSSI: " + String(WiFi.RSSI()) + " dBm\n";
-  body += "- IP Address: " + WiFi.localIP().toString() + "\n";
-  body += "- MAC Address: " + WiFi.macAddress() + "\n\n";
-  
-  body += "**Temperature Control**\n";
-  body += "- Current Temperature: " + String(currentTemp) + "°C\n";
-  body += "- Target Temperature: " + String(targetTemp) + "°C\n";
-  body += "- Heating Status: " + String(heating ? "ON" : "OFF") + "\n\n";
-  
-  body += "**Configuration**\n";
-  body += "- Home Assistant Host: " + String(config.ha_host) + ":" + String(config.ha_port) + "\n";
-  body += "- Temperature Sensor: " + String(config.temperature_sensor) + "\n";
-  body += "- Climate Entity: " + String(config.climate_entity) + "\n\n";
-  
-  // Add timestamp
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    char timestamp[64];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S UTC", &timeinfo);
-    body += "**Report Generated:** " + String(timestamp) + "\n";
-  }
-  
-  statsDoc["body"] = body;
-  statsDoc["labels"] = JsonArray();
-  statsDoc["labels"].add("device-stats");
-  statsDoc["labels"].add("automated-report");
-  
-  String payload;
-  serializeJson(statsDoc, payload);
-  
-  http.setTimeout(15000);
-  http.begin(client, statsUrl);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("User-Agent", "ESP32-HomeAssistant-" + String(FIRMWARE_VERSION));
-  
-  int httpCode = http.POST(payload);
-  
-  if (httpCode == HTTP_CODE_CREATED || httpCode == HTTP_CODE_OK) {
-    Serial.println("Device stats sent successfully");
-  } else {
-    Serial.print("Device stats failed, HTTP code: ");
-    Serial.println(httpCode);
-    if (httpCode > 0) {
-      String response = http.getString();
-      Serial.print("Response: ");
-      Serial.println(response);
-    }
-  }
-  
-  http.end();
+  // TODO: Implement proper stats reporting to a backend service
+  // For now, stats are logged to Serial for debugging
 }
 
 // Download and update UI config from repository
