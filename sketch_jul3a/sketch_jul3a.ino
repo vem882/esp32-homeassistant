@@ -11,14 +11,14 @@
 #include <Update.h>
 
 // Firmware version and OTA configuration
-#define FIRMWARE_VERSION "2025.07.05.17"
+#define FIRMWARE_VERSION "2025.07.05.18"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
 
 // Update intervals
-const unsigned long UPDATE_INTERVAL = 5000;         // HA data update: 5 seconds
-const unsigned long OTA_CHECK_INTERVAL = 300000;    // OTA check: 5 minutes
+const unsigned long UPDATE_INTERVAL = 3000;         // HA data update: 3 seconds
+const unsigned long OTA_CHECK_INTERVAL = 200000;    // OTA check: 5 minutes
 const unsigned long SCREENSAVER_TIMEOUT = 60000;    // Screensaver: 60 seconds
 
 // Device identification
