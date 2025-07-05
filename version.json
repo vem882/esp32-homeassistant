@@ -1,11 +1,11 @@
 {
-  "version": "2025.07.05.23",
+  "version": "2025.07.05.25",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Merge branch 'main' of https://github.com/vem882/esp32-homeassistant",
+  "release_notes": "Add firmware version label and enhance device stats reporting",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-07-05 19:19:47 UTC",
-  "commit_hash": "2320ad9",
-  "firmware_size": 1157952,
-  "build_number": 11
+  "build_date": "2025-07-05 19:30:08 UTC",
+  "commit_hash": "918de15",
+  "firmware_size": 1162304,
+  "build_number": 12
 }
