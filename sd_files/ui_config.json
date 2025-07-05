@@ -32,6 +32,14 @@
         "align": "center"
       },
       {
+        "type": "icon",
+        "name": "temp_icon",
+        "x": 130, "y": 140,
+        "size": 14,
+        "icon": "thermometer",
+        "color": "#FFFF00"
+      },
+      {
         "type": "button",
         "name": "temp_up",
         "x": 220, "y": 120,
@@ -66,6 +74,22 @@
         "x": 20, "y": 20,
         "text": "00:00",
         "font_size": 16,
+        "color": "#FFFFFF"
+      },
+      {
+        "type": "icon",
+        "name": "wifi_icon",
+        "x": 280, "y": 20,
+        "size": 16,
+        "icon": "wifi_full",
+        "color": "#00FF00"
+      },
+      {
+        "type": "label",
+        "name": "wifi_strength",
+        "x": 300, "y": 20,
+        "text": "-50",
+        "font_size": 12,
         "color": "#FFFFFF"
       }
     ]

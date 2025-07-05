@@ -3,6 +3,7 @@
 #include <XPT2046_Touchscreen.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <NetworkClientSecure.h>
 #include <ArduinoJson.h>
 #include <time.h>
 #include <SD.h>
@@ -16,7 +17,7 @@
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
 
 // Update intervals
-const unsigned long UPDATE_INTERVAL = 30000;        // HA data update: 30 seconds
+const unsigned long UPDATE_INTERVAL = 5000;         // HA data update: 5 seconds
 const unsigned long OTA_CHECK_INTERVAL = 300000;    // OTA check: 5 minutes
 const unsigned long SCREENSAVER_TIMEOUT = 60000;    // Screensaver: 60 seconds
 
@@ -429,6 +430,38 @@ void updateUI() {
     }
   }
   
+  // Update WiFi strength indicator
+  if (WiFi.status() == WL_CONNECTED) {
+    int rssi = WiFi.RSSI();
+    snprintf(buffer, sizeof(buffer), "%d", rssi);
+    ui.updateElement(currentScreen.c_str(), "wifi_strength", "text", buffer);
+    
+    // Update WiFi icon based on signal strength
+    String wifiIcon = "wifi_full";
+    String wifiColor = "#00FF00"; // Green
+    
+    if (rssi > -50) {
+      wifiIcon = "wifi_full";
+      wifiColor = "#00FF00"; // Green
+    } else if (rssi > -60) {
+      wifiIcon = "wifi_good";
+      wifiColor = "#FFFF00"; // Yellow
+    } else if (rssi > -70) {
+      wifiIcon = "wifi_weak";
+      wifiColor = "#FF8000"; // Orange
+    } else {
+      wifiIcon = "wifi_poor";
+      wifiColor = "#FF0000"; // Red
+    }
+    
+    ui.updateElement(currentScreen.c_str(), "wifi_icon", "icon", wifiIcon.c_str());
+    ui.updateElement(currentScreen.c_str(), "wifi_icon", "color", wifiColor.c_str());
+  } else {
+    ui.updateElement(currentScreen.c_str(), "wifi_strength", "text", "N/A");
+    ui.updateElement(currentScreen.c_str(), "wifi_icon", "icon", "wifi_off");
+    ui.updateElement(currentScreen.c_str(), "wifi_icon", "color", "#FF0000");
+  }
+  
   // Re-render screen
   ui.renderScreen(currentScreen.c_str());
 }
@@ -733,9 +766,12 @@ void printWiFiStatus() {
 // OTA Update Functions with enhanced safety
 bool checkForOTAUpdate() {
   HTTPClient http;
-  WiFiClient client;
+  NetworkClientSecure client;
   
   Serial.println("Checking for OTA update...");
+  
+  // Skip certificate verification for GitHub
+  client.setInsecure();
   
   // Set timeout to prevent hanging
   http.setTimeout(15000);
@@ -862,8 +898,40 @@ void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
       String svgContent = svgFile.readString();
       svgFile.close();
       
+      // WiFi icons
+      if (String(iconName).indexOf("wifi") >= 0) {
+        if (String(iconName) == "wifi_full") {
+          // Draw full WiFi signal (3 arcs)
+          tft.drawCircle(x + size/2, y + size, size/4, color);
+          tft.drawCircle(x + size/2, y + size, size/2, color);
+          tft.drawCircle(x + size/2, y + size, 3*size/4, color);
+          tft.fillCircle(x + size/2, y + size, 2, color);
+        } else if (String(iconName) == "wifi_good") {
+          // Draw good WiFi signal (2 arcs)
+          tft.drawCircle(x + size/2, y + size, size/4, color);
+          tft.drawCircle(x + size/2, y + size, size/2, color);
+          tft.fillCircle(x + size/2, y + size, 2, color);
+        } else if (String(iconName) == "wifi_weak") {
+          // Draw weak WiFi signal (1 arc)
+          tft.drawCircle(x + size/2, y + size, size/4, color);
+          tft.fillCircle(x + size/2, y + size, 2, color);
+        } else if (String(iconName) == "wifi_poor") {
+          // Draw poor WiFi signal (just dot)
+          tft.fillCircle(x + size/2, y + size, 2, color);
+        } else if (String(iconName) == "wifi_off") {
+          // Draw WiFi off (X mark)
+          tft.drawLine(x, y, x + size, y + size, color);
+          tft.drawLine(x + size, y, x, y + size, color);
+        }
+      }
+      // Thermometer icon
+      else if (String(iconName) == "thermometer") {
+        // Draw simple thermometer
+        tft.drawRect(x + size/2 - 2, y, 4, size - 4, color);
+        tft.fillCircle(x + size/2, y + size - 2, 3, color);
+      }
       // Basic SVG circle parsing (simplified)
-      if (svgContent.indexOf("<circle") >= 0) {
+      else if (svgContent.indexOf("<circle") >= 0) {
         tft.fillCircle(x + size/2, y + size/2, size/2, color);
       }
       // Basic SVG rectangle parsing
@@ -930,9 +998,12 @@ void sendDeviceStats() {
 // Download and update UI config from repository
 bool updateUIConfig() {
   HTTPClient http;
-  WiFiClient client;
+  NetworkClientSecure client;
   
   Serial.println("Checking for UI config updates...");
+  
+  // Skip certificate verification for GitHub
+  client.setInsecure();
   
   http.setTimeout(15000);
   http.begin(client, UI_CONFIG_URL);
@@ -968,9 +1039,12 @@ bool updateUIConfig() {
 // Download firmware to SD card for safer updates
 bool downloadFirmwareToSD(const char* firmwareUrl) {
   HTTPClient http;
-  WiFiClient client;
+  NetworkClientSecure client;
   
   Serial.println("Downloading firmware to SD card...");
+  
+  // Skip certificate verification for GitHub
+  client.setInsecure();
   
   // Check available space on SD card
   uint64_t totalBytes = SD.totalBytes();
