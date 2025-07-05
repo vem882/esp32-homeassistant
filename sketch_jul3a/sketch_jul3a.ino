@@ -13,6 +13,16 @@
 #define FIRMWARE_VERSION "1.0.2"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
+#define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
+
+// Update intervals
+const unsigned long UPDATE_INTERVAL = 30000;        // HA data update: 30 seconds
+const unsigned long OTA_CHECK_INTERVAL = 300000;    // OTA check: 5 minutes
+const unsigned long SCREENSAVER_TIMEOUT = 60000;    // Screensaver: 60 seconds
+
+// Device identification
+String deviceId = "";
+unsigned long totalRuntime = 0;
 
 // Hardware definitions
 #define XPT2046_IRQ 36
@@ -52,8 +62,6 @@ bool heating = false;
 bool screensaverActive = false;
 unsigned long lastActivity = 0;
 unsigned long lastUpdate = 0;
-const unsigned long UPDATE_INTERVAL = 30000;
-const unsigned long SCREENSAVER_TIMEOUT = 60000;
 
 // Touch handling
 struct TouchPoint {
@@ -86,6 +94,8 @@ private:
       drawButton(element);
     } else if (type == "indicator") {
       drawIndicator(element);
+    } else if (type == "icon") {
+      drawIcon(element);
     }
   }
   
@@ -153,6 +163,18 @@ private:
       tft.fillCircle(x, y, width/2, color);
     } else {
       tft.fillRect(x - width/2, y - height/2, width, height, color);
+    }
+  }
+  
+  void drawIcon(JsonObject element) {
+    int x = element["x"];
+    int y = element["y"];
+    int size = element["size"] | 16;
+    String iconName = element["icon"].as<String>();
+    uint16_t color = parseColor(element["color"] | "#FFFFFF");
+    
+    if (iconName.length() > 0) {
+      drawSVGIcon(iconName.c_str(), x - size/2, y - size/2, size, color);
     }
   }
   
@@ -512,6 +534,14 @@ void setup() {
   // Initial render
   ui.renderScreen("main_screen");
   
+  // Generate device ID
+  deviceId = generateDeviceId();
+  Serial.print("Device ID: ");
+  Serial.println(deviceId);
+  
+  // Send device stats (optional)
+  sendDeviceStats();
+  
   // Initial data
   getTemperature();
   lastActivity = millis();
@@ -546,9 +576,21 @@ void loop() {
     lastUpdate = millis();
   }
   
-  // Check for OTA updates every 6 hours (21600000 ms)
+  // Check for UI config updates every hour
+  static unsigned long lastUIConfigCheck = 0;
+  if (millis() - lastUIConfigCheck > 3600000) { // 1 hour
+    lastUIConfigCheck = millis();
+    
+    Serial.println("Checking for UI config updates...");
+    if (updateUIConfig()) {
+      Serial.println("UI config updated, re-rendering screen");
+      ui.renderScreen(currentScreen.c_str());
+    }
+  }
+  
+  // Check for OTA updates every 5 minutes (300000 ms)
   static unsigned long lastOTACheck = 0;
-  if (millis() - lastOTACheck > 21600000) {
+  if (millis() - lastOTACheck > OTA_CHECK_INTERVAL) {
     lastOTACheck = millis();
     
     Serial.println("Performing scheduled OTA check...");
@@ -722,7 +764,7 @@ bool checkForOTAUpdate() {
       }
       
       // Check if update is needed
-      if (forceUpdate || strcmp(latestVersion, FIRMWARE_VERSION) > 0) {
+      if (forceUpdate || isNewerVersion(latestVersion, FIRMWARE_VERSION)) {
         Serial.println("New firmware available!");
         http.end();
         return performOTAUpdate(downloadUrl ? downloadUrl : OTA_FIRMWARE_URL);
@@ -744,143 +786,17 @@ bool checkForOTAUpdate() {
 }
 
 bool performOTAUpdate(const char* firmwareUrl) {
-  HTTPClient http;
-  WiFiClient client;
-  
   Serial.println("Starting OTA update...");
   
-  // Check available space before starting
-  size_t freeSpace = ESP.getFreeSketchSpace();
-  Serial.print("Available space for OTA: ");
-  Serial.println(freeSpace);
-  
-  if (freeSpace < 100000) { // Require at least 100KB free
-    Serial.println("Insufficient space for OTA update");
-    showOTAError("Not enough space");
+  // First download firmware to SD card
+  if (!downloadFirmwareToSD(firmwareUrl)) {
+    Serial.println("Failed to download firmware to SD card");
+    showOTAError("Download failed");
     return false;
   }
   
-  // Show OTA progress on screen
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
-  tft.setCursor(10, 50);
-  tft.println("OTA Update");
-  tft.setCursor(10, 80);
-  tft.println("Downloading...");
-  
-  // Set timeout and configure HTTP client
-  http.setTimeout(30000);
-  http.begin(client, firmwareUrl);
-  http.addHeader("User-Agent", "ESP32-HomeAssistant");
-  
-  int httpCode = http.GET();
-  
-  if (httpCode == HTTP_CODE_OK) {
-    int contentLength = http.getSize();
-    
-    if (contentLength > 0 && contentLength < freeSpace) {
-      Serial.print("Firmware size: ");
-      Serial.println(contentLength);
-      
-      // Initialize update process
-      if (!Update.begin(contentLength)) {
-        Serial.println("Update begin failed");
-        showOTAError("Update init failed");
-        http.end();
-        return false;
-      }
-      
-      Serial.println("Starting firmware update...");
-      
-      WiFiClient* stream = http.getStreamPtr();
-      size_t written = 0;
-      uint8_t buffer[1024];
-      int lastProgress = -1;
-      
-      while (http.connected() && (written < contentLength)) {
-        size_t available = stream->available();
-        if (available > 0) {
-          size_t readBytes = stream->readBytes(buffer, min(available, sizeof(buffer)));
-          
-          if (readBytes > 0) {
-            size_t writtenBytes = Update.write(buffer, readBytes);
-            written += writtenBytes;
-            
-            // Update progress display
-            int progress = (written * 100) / contentLength;
-            if (progress != lastProgress) {
-              lastProgress = progress;
-              updateOTAProgress(progress);
-              
-              Serial.print("Progress: ");
-              Serial.print(progress);
-              Serial.println("%");
-            }
-            
-            if (writtenBytes != readBytes) {
-              Serial.println("Error writing firmware data");
-              showOTAError("Write error");
-              http.end();
-              return false;
-            }
-          }
-        }
-        
-        // Watchdog reset
-        yield();
-        
-        // Timeout check
-        if (millis() % 1000 == 0) {
-          if (!http.connected()) {
-            Serial.println("Connection lost during download");
-            showOTAError("Connection lost");
-            http.end();
-            return false;
-          }
-        }
-      }
-      
-      if (written == contentLength) {
-        Serial.println("Firmware download complete");
-        
-        if (Update.end(true)) {
-          Serial.println("OTA update successful!");
-          
-          tft.fillScreen(TFT_BLACK);
-          tft.setCursor(10, 50);
-          tft.setTextColor(TFT_GREEN);
-          tft.println("Update Complete!");
-          tft.setCursor(10, 80);
-          tft.setTextColor(TFT_WHITE);
-          tft.println("Restarting...");
-          
-          delay(3000);
-          ESP.restart();
-          return true;
-        } else {
-          Serial.print("Update end failed: ");
-          Serial.println(Update.errorString());
-          showOTAError("Update failed");
-        }
-      } else {
-        Serial.println("Firmware download incomplete");
-        showOTAError("Download incomplete");
-      }
-    } else {
-      Serial.print("Invalid firmware size: ");
-      Serial.println(contentLength);
-      showOTAError("Invalid firmware");
-    }
-  } else {
-    Serial.print("HTTP error downloading firmware: ");
-    Serial.println(httpCode);
-    showOTAError("Download failed");
-  }
-  
-  http.end();
-  delay(5000);
-  return false;
+  // Then apply firmware from SD card
+  return applyFirmwareFromSD();
 }
 
 void updateOTAProgress(int progress) {
@@ -924,4 +840,364 @@ void showOTAError(const char* error) {
   tft.println("Device will continue with");
   tft.setCursor(10, 140);
   tft.println("current firmware");
+}
+
+// SVG icon rendering support
+void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
+  String iconPath = "/icons/" + String(iconName) + ".svg";
+  
+  if (SD.exists(iconPath)) {
+    // Simple SVG parsing for basic shapes
+    File svgFile = SD.open(iconPath);
+    if (svgFile) {
+      String svgContent = svgFile.readString();
+      svgFile.close();
+      
+      // Basic SVG circle parsing (simplified)
+      if (svgContent.indexOf("<circle") >= 0) {
+        tft.fillCircle(x + size/2, y + size/2, size/2, color);
+      }
+      // Basic SVG rectangle parsing
+      else if (svgContent.indexOf("<rect") >= 0) {
+        tft.fillRect(x, y, size, size, color);
+      }
+      // Basic SVG path for simple icons
+      else {
+        // Fallback: draw a simple icon placeholder
+        tft.drawRect(x, y, size, size, color);
+        tft.drawLine(x, y, x + size, y + size, color);
+        tft.drawLine(x + size, y, x, y + size, color);
+      }
+    }
+  } else {
+    // Icon not found, draw placeholder
+    tft.drawRect(x, y, size, size, TFT_RED);
+    tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, TFT_RED);
+  }
+}
+
+// Generate unique device ID
+String generateDeviceId() {
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  String chipId = String((uint32_t)ESP.getEfuseMac(), HEX);
+  return "ESP32_" + mac.substring(6) + "_" + chipId.substring(0, 4);
+}
+
+// Send device statistics to repository
+void sendDeviceStats() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  HTTPClient http;
+  String statsUrl = "https://api.github.com/repos/vem882/esp32-homeassistant/issues";
+  
+  // Create statistics payload
+  DynamicJsonDocument statsDoc(512);
+  statsDoc["title"] = "Device Stats: " + deviceId;
+  statsDoc["body"] = "Device ID: " + deviceId + 
+                     "\nFirmware: " + String(FIRMWARE_VERSION) +
+                     "\nUptime: " + String(millis() / 1000) + " seconds" +
+                     "\nFree Heap: " + String(ESP.getFreeHeap()) + " bytes" +
+                     "\nFlash Size: " + String(ESP.getFlashChipSize()) + " bytes" +
+                     "\nWiFi RSSI: " + String(WiFi.RSSI()) + " dBm" +
+                     "\nLast Boot: " + String(totalRuntime);
+  statsDoc["labels"] = JsonArray();
+  statsDoc["labels"].add("device-stats");
+  
+  String payload;
+  serializeJson(statsDoc, payload);
+  
+  http.begin(statsUrl);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("User-Agent", "ESP32-HomeAssistant");
+  
+  int httpCode = http.POST(payload);
+  Serial.print("Device stats sent, response: ");
+  Serial.println(httpCode);
+  
+  http.end();
+}
+
+// Download and update UI config from repository
+bool updateUIConfig() {
+  HTTPClient http;
+  WiFiClient client;
+  
+  Serial.println("Checking for UI config updates...");
+  
+  http.setTimeout(15000);
+  http.begin(client, UI_CONFIG_URL);
+  http.addHeader("User-Agent", "ESP32-HomeAssistant");
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    
+    // Save new UI config to SD card
+    File file = SD.open("/ui_config.json", FILE_WRITE);
+    if (file) {
+      file.print(payload);
+      file.close();
+      
+      // Reload UI config
+      loadUIConfig();
+      
+      Serial.println("UI config updated successfully");
+      http.end();
+      return true;
+    }
+  } else {
+    Serial.print("UI config update failed, HTTP code: ");
+    Serial.println(httpCode);
+  }
+  
+  http.end();
+  return false;
+}
+
+// Download firmware to SD card for safer updates
+bool downloadFirmwareToSD(const char* firmwareUrl) {
+  HTTPClient http;
+  WiFiClient client;
+  
+  Serial.println("Downloading firmware to SD card...");
+  
+  // Check available space on SD card
+  uint64_t totalBytes = SD.totalBytes();
+  uint64_t usedBytes = SD.usedBytes();
+  uint64_t freeBytes = totalBytes - usedBytes;
+  
+  if (freeBytes < 2000000) { // Require at least 2MB free
+    Serial.println("Insufficient space on SD card for firmware download");
+    return false;
+  }
+  
+  // Delete old firmware file if exists
+  if (SD.exists("/firmware_new.bin")) {
+    SD.remove("/firmware_new.bin");
+  }
+  
+  http.setTimeout(60000); // 60 second timeout for large file
+  http.begin(client, firmwareUrl);
+  http.addHeader("User-Agent", "ESP32-HomeAssistant");
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    int contentLength = http.getSize();
+    
+    if (contentLength > 0 && contentLength < freeBytes) {
+      Serial.print("Firmware size: ");
+      Serial.println(contentLength);
+      
+      File firmwareFile = SD.open("/firmware_new.bin", FILE_WRITE);
+      if (!firmwareFile) {
+        Serial.println("Failed to create firmware file on SD card");
+        http.end();
+        return false;
+      }
+      
+      WiFiClient* stream = http.getStreamPtr();
+      size_t written = 0;
+      uint8_t buffer[1024];
+      int lastProgress = -1;
+      
+      // Show download progress on screen
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(10, 50);
+      tft.println("Downloading");
+      tft.setCursor(10, 80);
+      tft.println("to SD Card...");
+      
+      while (http.connected() && (written < contentLength)) {
+        size_t available = stream->available();
+        if (available > 0) {
+          size_t readBytes = stream->readBytes(buffer, min(available, sizeof(buffer)));
+          
+          if (readBytes > 0) {
+            size_t writtenBytes = firmwareFile.write(buffer, readBytes);
+            written += writtenBytes;
+            
+            // Update progress display
+            int progress = (written * 100) / contentLength;
+            if (progress != lastProgress) {
+              lastProgress = progress;
+              
+              // Update screen
+              tft.fillRect(10, 120, 220, 50, TFT_BLACK);
+              tft.setCursor(10, 120);
+              tft.print("Progress: ");
+              tft.print(progress);
+              tft.print("%");
+              
+              // Draw progress bar
+              int barWidth = (progress * 200) / 100;
+              tft.fillRect(10, 150, barWidth, 15, TFT_GREEN);
+              tft.drawRect(10, 150, 200, 15, TFT_WHITE);
+              
+              Serial.print("Download progress: ");
+              Serial.print(progress);
+              Serial.println("%");
+            }
+            
+            if (writtenBytes != readBytes) {
+              Serial.println("Error writing to SD card");
+              firmwareFile.close();
+              http.end();
+              return false;
+            }
+          }
+        }
+        yield(); // Feed watchdog
+      }
+      
+      firmwareFile.close();
+      
+      if (written == contentLength) {
+        Serial.println("Firmware downloaded to SD card successfully");
+        http.end();
+        return true;
+      } else {
+        Serial.println("Firmware download incomplete");
+        SD.remove("/firmware_new.bin");
+      }
+    } else {
+      Serial.print("Invalid firmware size or insufficient space: ");
+      Serial.println(contentLength);
+    }
+  } else {
+    Serial.print("HTTP error downloading firmware: ");
+    Serial.println(httpCode);
+  }
+  
+  http.end();
+  return false;
+}
+
+// Apply firmware update from SD card
+bool applyFirmwareFromSD() {
+  if (!SD.exists("/firmware_new.bin")) {
+    Serial.println("No firmware file found on SD card");
+    return false;
+  }
+  
+  File firmwareFile = SD.open("/firmware_new.bin", FILE_READ);
+  if (!firmwareFile) {
+    Serial.println("Failed to open firmware file from SD card");
+    return false;
+  }
+  
+  size_t firmwareSize = firmwareFile.size();
+  Serial.print("Applying firmware from SD card, size: ");
+  Serial.println(firmwareSize);
+  
+  // Initialize update process
+  if (!Update.begin(firmwareSize)) {
+    Serial.println("Update begin failed");
+    firmwareFile.close();
+    return false;
+  }
+  
+  // Show update progress on screen
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 50);
+  tft.println("Installing");
+  tft.setCursor(10, 80);
+  tft.println("Firmware...");
+  
+  size_t written = 0;
+  uint8_t buffer[1024];
+  int lastProgress = -1;
+  
+  while (firmwareFile.available()) {
+    size_t readBytes = firmwareFile.read(buffer, sizeof(buffer));
+    
+    if (readBytes > 0) {
+      size_t writtenBytes = Update.write(buffer, readBytes);
+      written += writtenBytes;
+      
+      // Update progress display
+      int progress = (written * 100) / firmwareSize;
+      if (progress != lastProgress) {
+        lastProgress = progress;
+        
+        // Update screen
+        tft.fillRect(10, 120, 220, 50, TFT_BLACK);
+        tft.setCursor(10, 120);
+        tft.print("Progress: ");
+        tft.print(progress);
+        tft.print("%");
+        
+        // Draw progress bar
+        int barWidth = (progress * 200) / 100;
+        tft.fillRect(10, 150, barWidth, 15, TFT_BLUE);
+        tft.drawRect(10, 150, 200, 15, TFT_WHITE);
+        
+        Serial.print("Install progress: ");
+        Serial.print(progress);
+        Serial.println("%");
+      }
+      
+      if (writtenBytes != readBytes) {
+        Serial.println("Error writing firmware");
+        firmwareFile.close();
+        return false;
+      }
+    }
+    
+    yield(); // Feed watchdog
+  }
+  
+  firmwareFile.close();
+  
+  if (Update.end(true)) {
+    Serial.println("Firmware update successful!");
+    
+    // Clean up
+    SD.remove("/firmware_new.bin");
+    
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor(10, 50);
+    tft.setTextColor(TFT_GREEN);
+    tft.println("Update Complete!");
+    tft.setCursor(10, 80);
+    tft.setTextColor(TFT_WHITE);
+    tft.println("Restarting...");
+    
+    delay(3000);
+    ESP.restart();
+    return true;
+  } else {
+    Serial.print("Firmware update failed: ");
+    Serial.println(Update.errorString());
+    SD.remove("/firmware_new.bin");
+    return false;
+  }
+}
+
+// Version comparison function supporting both X.Y.Z and YYYY.MM.DD.BUILD formats
+bool isNewerVersion(const char* latestVersion, const char* currentVersion) {
+  String latest = String(latestVersion);
+  String current = String(currentVersion);
+  
+  // Check if it's date-based version (YYYY.MM.DD.BUILD)
+  if (latest.indexOf('.') > 0 && latest.length() > 8) {
+    // Date-based version comparison
+    latest.replace(".", "");
+    current.replace(".", "");
+    
+    // Convert to numbers for comparison
+    long latestNum = latest.toInt();
+    long currentNum = current.toInt();
+    
+    return latestNum > currentNum;
+  } else {
+    // Traditional semantic version comparison
+    return strcmp(latestVersion, currentVersion) > 0;
+  }
 }
