@@ -11,7 +11,7 @@
 #include <Update.h>
 
 // Firmware version and OTA configuration
-#define FIRMWARE_VERSION "2025.07.05.38"
+#define FIRMWARE_VERSION "2025.07.05.31"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
@@ -276,8 +276,24 @@ void loadUIConfig() {
   }
 }
 
+bool initSDWithRetry() {
+  for (int i = 0; i < 3; i++) {
+    if (SD.begin(SD_CS)) {
+      return true;
+    }
+    delay(500);
+  }
+  return false;
+}
+
 void loadConfig() {
   Serial.println("Loading config.json...");
+  
+  if (!initSDWithRetry()) {
+    Serial.println("ERROR: SD initialization failed");
+    showError("SD INIT FAIL");
+    return;
+  }
   
   if (!SD.exists("/config.json")) {
     Serial.println("ERROR: config.json not found on SD card");
@@ -556,7 +572,7 @@ void setup() {
   
   // Initialize hardware
   Serial.println("Initializing SD card...");
-  if (!SD.begin(SD_CS)) {
+  if (!initSDWithRetry()) {
     Serial.println("ERROR: SD Card initialization failed!");
     Serial.println("Please check:");
     Serial.println("  - SD card is properly inserted");
@@ -963,7 +979,7 @@ void showOTAError(const char* error) {
   tft.println("current firmware");
 }
 
-// SVG icon rendering support
+// SVG icon rendering support - FIXED
 void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
   String iconPath = "/icons/" + String(iconName) + ".svg";
   
@@ -978,11 +994,8 @@ void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
     // Simple SVG parsing for basic shapes
     File svgFile = SD.open(iconPath);
     if (svgFile) {
-      String svgContent = svgFile.readString();
+      // Skip parsing and use hardcoded drawing for known icons
       svgFile.close();
-      
-      Serial.print("SVG content length: ");
-      Serial.println(svgContent.length());
       
       // WiFi icons - use hardcoded drawing for better performance
       if (String(iconName).indexOf("wifi") >= 0) {
@@ -1016,17 +1029,9 @@ void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
         tft.drawRect(x + size/2 - 2, y + 2, 4, size - 8, color);
         tft.fillCircle(x + size/2, y + size - 4, 4, color);
       }
-      // Basic SVG circle parsing (simplified)
-      else if (svgContent.indexOf("<circle") >= 0) {
-        tft.fillCircle(x + size/2, y + size/2, size/2, color);
-      }
-      // Basic SVG rectangle parsing
-      else if (svgContent.indexOf("<rect") >= 0) {
-        tft.fillRect(x, y, size, size, color);
-      }
-      // Basic SVG path for simple icons
+      // Fallback for other icons
       else {
-        // Fallback: draw a simple icon placeholder
+        // Draw a placeholder
         tft.drawRect(x, y, size, size, color);
         tft.drawLine(x, y, x + size, y + size, color);
         tft.drawLine(x + size, y, x, y + size, color);
@@ -1109,11 +1114,19 @@ bool updateUIConfig() {
   if (httpCode == HTTP_CODE_OK) {
     String payload = http.getString();
     
+    // Reset SD card before writing
+    SD.end();
+    if (!initSDWithRetry()) {
+      Serial.println("SD re-init failed for UI config update");
+      return false;
+    }
+    
     // Save new UI config to SD card
     File file = SD.open("/ui_config.json", FILE_WRITE);
     if (file) {
       file.print(payload);
       file.close();
+      Serial.println("UI config written to SD card");
       
       // Reload UI config
       loadUIConfig();
@@ -1121,6 +1134,8 @@ bool updateUIConfig() {
       Serial.println("UI config updated successfully");
       http.end();
       return true;
+    } else {
+      Serial.println("Failed to open ui_config.json for writing");
     }
   } else {
     Serial.print("UI config update failed, HTTP code: ");
@@ -1144,9 +1159,10 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
   // Check SD card availability (skip unreliable space check)
   Serial.println("Checking SD card availability...");
   
-  // Test basic SD card functionality
-  if (!SD.begin(SD_CS)) {
-    Serial.println("SD card initialization failed");
+  // Reset SD card before operation
+  SD.end();
+  if (!initSDWithRetry()) {
+    Serial.println("SD card re-initialization failed");
     return false;
   }
   
@@ -1221,11 +1237,12 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
     Serial.println(" bytes");
     
     if (contentLength > 0) {
-      // Since SD space functions don't work reliably, we'll try to download
-      // and handle any space issues during the actual write process
-      Serial.print("Attempting to download firmware of size: ");
-      Serial.print(contentLength);
-      Serial.println(" bytes");
+      // Reset SD card before large write
+      SD.end();
+      if (!initSDWithRetry()) {
+        Serial.println("SD re-init failed before firmware download");
+        return false;
+      }
       
       File firmwareFile = SD.open("/firmware_new.bin", FILE_WRITE);
       if (!firmwareFile) {
@@ -1321,6 +1338,13 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
 
 // Apply firmware update from SD card
 bool applyFirmwareFromSD() {
+  // Reset SD card before operation
+  SD.end();
+  if (!initSDWithRetry()) {
+    Serial.println("SD init failed for firmware apply");
+    return false;
+  }
+  
   if (!SD.exists("/firmware_new.bin")) {
     Serial.println("No firmware file found on SD card");
     return false;
@@ -1449,7 +1473,7 @@ void listSDCardContents() {
   Serial.println("=== SD Card Contents ===");
   
   // First check if SD card is accessible
-  if (!SD.begin(SD_CS)) {
+  if (!initSDWithRetry()) {
     Serial.println("SD card not accessible");
     return;
   }
