@@ -33,6 +33,7 @@ bool updateUIConfig();
 bool downloadFirmwareToSD(const char* firmwareUrl);
 bool applyFirmwareFromSD();
 bool isNewerVersion(const char* latestVersion, const char* currentVersion);
+void listSDCardContents();
 
 // Hardware definitions
 #define XPT2046_IRQ 36
@@ -599,10 +600,13 @@ void setup() {
   // Check for OTA updates immediately on boot
   Serial.println("=== BOOT OTA CHECK STARTING ===");
   Serial.println("Checking for OTA updates on boot...");
-  if (checkForOTAUpdate()) {
+  bool otaResult = checkForOTAUpdate();
+  if (otaResult) {
     // OTA update successful, device will restart
     Serial.println("OTA update completed, restarting...");
     return;
+  } else {
+    Serial.println("OTA update not needed or failed - continuing with normal boot");
   }
   Serial.println("=== BOOT OTA CHECK COMPLETED ===");
   
@@ -1090,14 +1094,55 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
   uint64_t usedBytes = SD.usedBytes();
   uint64_t freeBytes = totalBytes - usedBytes;
   
-  if (freeBytes < 2000000) { // Require at least 2MB free
-    Serial.println("Insufficient space on SD card for firmware download");
-    return false;
+  Serial.print("SD Card Space - Total: ");
+  Serial.print(totalBytes);
+  Serial.print(", Used: ");
+  Serial.print(usedBytes);
+  Serial.print(", Free: ");
+  Serial.print(freeBytes);
+  Serial.println(" bytes");
+  
+  // List SD card contents for debugging
+  listSDCardContents();
+  
+  // Delete old firmware file if exists to free up space
+  if (SD.exists("/firmware_new.bin")) {
+    File oldFile = SD.open("/firmware_new.bin");
+    size_t oldSize = oldFile.size();
+    oldFile.close();
+    SD.remove("/firmware_new.bin");
+    Serial.print("Deleted old firmware file, freed ");
+    Serial.print(oldSize);
+    Serial.println(" bytes");
+    freeBytes += oldSize;
   }
   
-  // Delete old firmware file if exists
-  if (SD.exists("/firmware_new.bin")) {
-    SD.remove("/firmware_new.bin");
+  // Check minimum free space (1.5MB should be enough for most ESP32 firmware)
+  if (freeBytes < 1500000) {
+    Serial.print("Insufficient space on SD card for firmware download. Need at least 1.5MB, have ");
+    Serial.print(freeBytes);
+    Serial.println(" bytes");
+    
+    // Try to free up more space by cleaning up temporary files
+    Serial.println("Attempting to free up space by cleaning temporary files...");
+    
+    // Clean up any temporary files
+    if (SD.exists("/temp.bin")) {
+      SD.remove("/temp.bin");
+      Serial.println("Deleted /temp.bin");
+    }
+    
+    // Re-check space after cleanup
+    usedBytes = SD.usedBytes();
+    freeBytes = totalBytes - usedBytes;
+    Serial.print("After cleanup, free space: ");
+    Serial.print(freeBytes);
+    Serial.println(" bytes");
+    
+    if (freeBytes < 1500000) {
+      Serial.println("Still insufficient space after cleanup");
+      return false;
+    }
   }
   
   http.setTimeout(60000); // 60 second timeout for large file
@@ -1109,7 +1154,22 @@ bool downloadFirmwareToSD(const char* firmwareUrl) {
   if (httpCode == HTTP_CODE_OK) {
     int contentLength = http.getSize();
     
-    if (contentLength > 0 && contentLength < freeBytes) {
+    Serial.print("Firmware content length: ");
+    Serial.print(contentLength);
+    Serial.println(" bytes");
+    
+    if (contentLength > 0) {
+      // Check if we have enough space for this specific firmware
+      if (contentLength > freeBytes) {
+        Serial.print("Not enough space for this firmware. Need ");
+        Serial.print(contentLength);
+        Serial.print(" bytes, have ");
+        Serial.print(freeBytes);
+        Serial.println(" bytes");
+        http.end();
+        return false;
+      }
+      
       Serial.print("Firmware size: ");
       Serial.println(contentLength);
       
@@ -1322,4 +1382,31 @@ bool isNewerVersion(const char* latestVersion, const char* currentVersion) {
     // Traditional semantic version comparison
     return strcmp(latestVersion, currentVersion) > 0;
   }
+}
+
+// Helper function to list SD card contents for debugging
+void listSDCardContents() {
+  Serial.println("=== SD Card Contents ===");
+  File root = SD.open("/");
+  if (!root) {
+    Serial.println("Failed to open root directory");
+    return;
+  }
+  
+  File file = root.openNextFile();
+  while (file) {
+    if (file.isDirectory()) {
+      Serial.print("DIR: ");
+      Serial.println(file.name());
+    } else {
+      Serial.print("FILE: ");
+      Serial.print(file.name());
+      Serial.print(" (");
+      Serial.print(file.size());
+      Serial.println(" bytes)");
+    }
+    file = root.openNextFile();
+  }
+  root.close();
+  Serial.println("=== End SD Card Contents ===");
 }
