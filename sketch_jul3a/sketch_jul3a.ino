@@ -521,13 +521,8 @@ void setup() {
 }
 
 void loop() {
-  static unsigned long lastUpdate = 0;
-  static unsigned long lastOTACheck = 0;
-  static unsigned long lastDisplayUpdate = 0;
-  static unsigned long lastTouchCheck = 0;
-  static unsigned long lastRotaryCheck = 0;
-  
-  unsigned long now = millis();
+  readTouch();
+  handleTouch();
   
   // Check WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
@@ -537,9 +532,24 @@ void loop() {
     return;
   }
   
+  // Screensaver logic
+  if (millis() - lastActivity > SCREENSAVER_TIMEOUT && !screensaverActive) {
+    screensaverActive = true;
+    currentScreen = "screensaver";
+    ui.renderScreen(currentScreen.c_str());
+  }
+  
+  // Update data periodically
+  if (millis() - lastUpdate > UPDATE_INTERVAL) {
+    getTemperature();
+    updateUI();
+    lastUpdate = millis();
+  }
+  
   // Check for OTA updates every 6 hours (21600000 ms)
-  if (now - lastOTACheck > 21600000) {
-    lastOTACheck = now;
+  static unsigned long lastOTACheck = 0;
+  if (millis() - lastOTACheck > 21600000) {
+    lastOTACheck = millis();
     
     Serial.println("Performing scheduled OTA check...");
     if (checkForOTAUpdate()) {
@@ -548,34 +558,7 @@ void loop() {
     }
   }
   
-  // Handle touch input
-  if (now - lastTouchCheck > 50) {
-    lastTouchCheck = now;
-    handleTouchInput();
-  }
-  
-  // Handle rotary input
-  if (now - lastRotaryCheck > 50) {
-    lastRotaryCheck = now;
-    handleRotaryInput();
-  }
-  
-  // Update Home Assistant data every 30 seconds
-  if (now - lastUpdate > 30000) {
-    lastUpdate = now;
-    
-    Serial.println("Updating Home Assistant data...");
-    getCurrentTemp();
-    getCurrentSetpoint();
-  }
-  
-  // Update display every 1 second
-  if (now - lastDisplayUpdate > 1000) {
-    lastDisplayUpdate = now;
-    drawUI();
-  }
-  
-  delay(10);
+  delay(50);
 }
 
 // Add new WiFi connection function with detailed debugging
