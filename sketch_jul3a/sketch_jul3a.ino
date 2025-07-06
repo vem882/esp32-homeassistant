@@ -806,10 +806,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("=== ESP32 Thermostat Starting ===");
   
-  // Initialize hardware
-  Serial.println("Testing SD card pins...");
-  testSDCardPins();
-  
+  // Initialize SD card for config.json reading only
   Serial.println("Initializing SD card for config.json reading...");
   sdCardWorking = initSDWithRetry();
   if (!sdCardWorking) {
@@ -1106,6 +1103,15 @@ bool checkForOTAUpdate() {
   Serial.print("Checking URL: ");
   Serial.println(OTA_UPDATE_URL);
   
+  // Check available memory before OTA
+  Serial.print("Free heap: ");
+  Serial.println(ESP.getFreeHeap());
+  
+  if (ESP.getFreeHeap() < 50000) {
+    Serial.println("Not enough free heap for OTA update");
+    return false;
+  }
+  
   // Skip certificate verification for GitHub
   client.setInsecure();
   
@@ -1172,6 +1178,10 @@ bool checkForOTAUpdate() {
 bool performOTAUpdate(const char* firmwareUrl) {
   Serial.println("Starting direct OTA update from GitHub...");
   
+  // Free up memory before OTA
+  uiConfig.clear();
+  iconCacheCount = 0;
+  
   HTTPClient http;
   NetworkClientSecure client;
   
@@ -1189,9 +1199,13 @@ bool performOTAUpdate(const char* firmwareUrl) {
     Serial.print(contentLength);
     Serial.println(" bytes");
     
-    if (contentLength > 0) {
+    Serial.print("Free heap before OTA: ");
+    Serial.println(ESP.getFreeHeap());
+    
+    if (contentLength > 0 && contentLength < 2000000) { // Sanity check
       if (!Update.begin(contentLength)) {
-        Serial.println("OTA update begin failed");
+        Serial.print("OTA begin failed: ");
+        Serial.println(Update.errorString());
         http.end();
         return false;
       }
@@ -1207,51 +1221,59 @@ bool performOTAUpdate(const char* firmwareUrl) {
       
       WiFiClient* stream = http.getStreamPtr();
       size_t written = 0;
-      uint8_t buffer[1024];
+      uint8_t buffer[512]; // Smaller buffer to save memory
       int lastProgress = -1;
+      unsigned long lastYield = millis();
       
       while (http.connected() && (written < contentLength)) {
+        // Yield more frequently to prevent watchdog
+        if (millis() - lastYield > 100) {
+          yield();
+          lastYield = millis();
+        }
+        
         size_t available = stream->available();
         if (available > 0) {
-          size_t readBytes = stream->readBytes(buffer, min(available, sizeof(buffer)));
+          size_t toRead = min(available, sizeof(buffer));
+          size_t readBytes = stream->readBytes(buffer, toRead);
           
           if (readBytes > 0) {
             size_t writtenBytes = Update.write(buffer, readBytes);
+            
+            if (writtenBytes != readBytes) {
+              Serial.println("Error writing firmware data");
+              Update.abort();
+              http.end();
+              return false;
+            }
+            
             written += writtenBytes;
             
-            // Update progress display
+            // Update progress display less frequently
             int progress = (written * 100) / contentLength;
-            if (progress != lastProgress) {
+            if (progress != lastProgress && (progress % 5 == 0 || progress > 95)) {
               lastProgress = progress;
-              
-              // Update screen
-              tft.fillRect(10, 120, 220, 50, TFT_BLACK);
-              tft.setCursor(10, 120);
-              tft.print("Progress: ");
-              tft.print(progress);
-              tft.print("%");
-              
-              // Draw progress bar
-              int barWidth = (progress * 200) / 100;
-              tft.fillRect(10, 150, barWidth, 15, TFT_BLUE);
-              tft.drawRect(10, 150, 200, 15, TFT_WHITE);
               
               Serial.print("OTA progress: ");
               Serial.print(progress);
               Serial.println("%");
-            }
-            
-            if (writtenBytes != readBytes) {
-              Serial.println("Error writing firmware");
-              http.end();
-              return false;
+              
+              // Update screen less frequently to save processing
+              tft.fillRect(10, 120, 220, 30, TFT_BLACK);
+              tft.setCursor(10, 120);
+              tft.print("Progress: ");
+              tft.print(progress);
+              tft.print("%");
             }
           }
+        } else {
+          delay(10); // Small delay if no data available
         }
-        yield();
       }
       
-      if (Update.end(true)) {
+      http.end(); // Close connection before finalizing
+      
+      if (written == contentLength && Update.end(true)) {
         Serial.println("OTA update successful!");
         
         tft.fillScreen(TFT_BLACK);
@@ -1262,13 +1284,19 @@ bool performOTAUpdate(const char* firmwareUrl) {
         tft.setTextColor(TFT_WHITE);
         tft.println("Restarting...");
         
-        delay(3000);
+        delay(2000);
         ESP.restart();
         return true;
       } else {
         Serial.print("OTA update failed: ");
         Serial.println(Update.errorString());
+        Serial.print("Written: ");
+        Serial.print(written);
+        Serial.print(" Expected: ");
+        Serial.println(contentLength);
       }
+    } else {
+      Serial.println("Invalid firmware size");
     }
   } else {
     Serial.print("HTTP error downloading firmware: ");
@@ -1330,7 +1358,10 @@ void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
   // Check if icon exists in memory cache
   bool iconFound = false;
   for (int i = 0; i < iconCacheCount; i++) {
-    if (iconCache[i].name == String(iconName)) {
+    // Check both with and without .svg extension
+    String cacheName = iconCache[i].name;
+    cacheName.replace(".svg", "");
+    if (cacheName == String(iconName) || iconCache[i].name == String(iconName)) {
       iconFound = true;
       Serial.println(" (found in cache)");
       break;

@@ -1,11 +1,11 @@
 {
-  "version": "2025.07.06.44",
+  "version": "2025.07.07.02",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Remove fallback UI config and update version info",
+  "release_notes": "Fix OTA update crash and remove unnecessary pin tests",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-07-06 21:09:17 UTC",
-  "commit_hash": "1a88f9e",
+  "build_date": "2025-07-07 12:00:00 UTC",
+  "commit_hash": "latest",
   "firmware_size": 1166064,
-  "build_number": 20
+  "build_number": 21
 }
