@@ -1,11 +1,11 @@
 {
-  "version": "2025.01.10.47",
+  "version": "2025.01.10.48",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Performance optimizations: Fast SD card init, eliminated display flicker, improved OTA stability. SD card initialization now uses single attempt with known working configuration. UI updates now render only changed elements to prevent screen flickering. OTA update process includes aggressive memory cleanup, smaller buffers, frequent watchdog feeding, and better error handling to prevent crashes.",
+  "release_notes": "Memory-optimized OTA updates: Ultra-aggressive memory cleanup with reduced memory requirements. OTA now requires only 60KB instead of 100KB+ free memory. Smaller 64-byte buffers for maximum efficiency. Enhanced memory monitoring during OTA process. Fixed memory management to handle large firmware updates even with limited free heap.",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-01-10 12:00:00 UTC",
-  "commit_hash": "perf001",
-  "firmware_size": 1166272,
-  "build_number": 47
+  "build_date": "2025-01-10 13:00:00 UTC",
+  "commit_hash": "memopt001",
+  "firmware_size": 1166704,
+  "build_number": 48
 }

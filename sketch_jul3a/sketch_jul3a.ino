@@ -11,7 +11,7 @@
 #include <Update.h>
 
 // Firmware version and OTA configuration
-#define FIRMWARE_VERSION "2025.01.10.47"
+#define FIRMWARE_VERSION "2025.01.10.48"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
@@ -902,7 +902,8 @@ void loop() {
   
   // Refresh UI config and icons from GitHub every hour
   static unsigned long lastUIConfigCheck = 0;
-  if (millis() - lastUIConfigCheck > 3600000) { // 1 hour
+  if (millis() - lastUIConfigCheck > 3600000) // 1 hour
+  {
     lastUIConfigCheck = millis();
     
     Serial.println("Refreshing content from GitHub...");
@@ -1151,44 +1152,8 @@ bool performOTAUpdate(const char* firmwareUrl) {
   tft.setCursor(10, 80);
   tft.println("Update...");
   
-  // Aggressively free memory before OTA
-  Serial.println("Freeing memory for OTA...");
-  uiConfig.clear();
-  uiConfig.shrinkToFit();
-  
-  // Clear icon cache
-  for (int i = 0; i < iconCacheCount; i++) {
-    iconCache[i].name = "";
-    iconCache[i].data = "";
-  }
-  iconCacheCount = 0;
-  
-  // Close SD card to free resources
-  SD.end();
-  
-  // Disable WiFi power saving
-  WiFi.setSleep(false);
-  
-  // Force garbage collection
-  Serial.print("Free heap before cleanup: ");
-  Serial.println(ESP.getFreeHeap());
-  
-  delay(2000); // Give time for cleanup
-  
-  Serial.print("Free heap after cleanup: ");
-  Serial.println(ESP.getFreeHeap());
-  
-  if (ESP.getFreeHeap() < 100000) {
-    Serial.println("Insufficient memory for OTA update");
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_RED);
-    tft.setCursor(10, 50);
-    tft.println("Update Failed!");
-    tft.setCursor(10, 80);
-    tft.println("Low Memory");
-    delay(3000);
-    return false;
-  }
+  // Use aggressive memory cleanup
+  aggressiveMemoryCleanup();
   
   HTTPClient http;
   NetworkClientSecure client;
@@ -1235,9 +1200,9 @@ bool performOTAUpdate(const char* firmwareUrl) {
     return false;
   }
   
-  // Additional memory check
-  if (ESP.getFreeHeap() < contentLength / 4) {
-    Serial.println("Not enough free memory for OTA buffer");
+  // More realistic memory check - we need much less with streaming approach
+  if (ESP.getFreeHeap() < 50000) {
+    Serial.println("Not enough free memory for OTA buffer (need at least 50KB)");
     http.end();
     return false;
   }
@@ -1267,13 +1232,16 @@ bool performOTAUpdate(const char* firmwareUrl) {
   
   WiFiClient* stream = http.getStreamPtr();
   size_t written = 0;
-  uint8_t buffer[128]; // Smaller buffer for stability
+  uint8_t buffer[64]; // Even smaller buffer for very tight memory
   int lastProgress = -1;
   unsigned long lastYield = millis();
   unsigned long lastProgressUpdate = millis();
   unsigned long lastHeapCheck = millis();
   
   Serial.println("Starting firmware download and flash...");
+  Serial.print("Using ");
+  Serial.print(sizeof(buffer));
+  Serial.println(" byte buffer for maximum memory efficiency");
   
   while (http.connected() && (written < contentLength)) {
     // Very frequent yields to prevent watchdog
@@ -1283,16 +1251,24 @@ bool performOTAUpdate(const char* firmwareUrl) {
       lastYield = millis();
     }
     
-    // Check heap every 5 seconds
-    if (millis() - lastHeapCheck > 5000) {
+    // Check heap every 10 seconds and be more aggressive about memory issues
+    if (millis() - lastHeapCheck > 10000) {
+      size_t freeHeap = ESP.getFreeHeap();
       Serial.print("Free heap during OTA: ");
-      Serial.println(ESP.getFreeHeap());
+      Serial.println(freeHeap);
       lastHeapCheck = millis();
       
-      if (ESP.getFreeHeap() < 10000) {
-        Serial.println("Memory critically low during OTA");
+      if (freeHeap < 5000) {
+        Serial.println("Memory critically low during OTA - aborting");
         Update.abort();
         http.end();
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_RED);
+        tft.setCursor(10, 50);
+        tft.println("OTA Failed!");
+        tft.setCursor(10, 80);
+        tft.println("Memory Low");
+        delay(3000);
         return false;
       }
     }
@@ -2164,3 +2140,46 @@ void loadAllContentFromGitHub() {
   
   Serial.println("GitHub content loading completed");
 }
+
+// Aggressive memory cleanup for OTA updates
+void aggressiveMemoryCleanup() {
+  Serial.println("=== AGGRESSIVE MEMORY CLEANUP FOR OTA ===");
+  
+  // Print initial state
+  Serial.print("Initial free heap: ");
+  Serial.println(ESP.getFreeHeap());
+  
+  // Clear all dynamic allocations
+  uiConfig.clear();
+  uiConfig.shrinkToFit();
+  
+  // Clear icon cache completely
+  for (int i = 0; i < iconCacheCount; i++) {
+    iconCache[i].name = "";
+    iconCache[i].data = "";
+  }
+  iconCacheCount = 0;
+  
+  // Close SD card operations
+  SD.end();
+  
+  // Force multiple garbage collection cycles
+  for (int i = 0; i < 10; i++) {
+    yield();
+    delay(50);
+  }
+  
+  // Print final state
+  Serial.print("Final free heap: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
+  Serial.println("=== MEMORY CLEANUP COMPLETE ===");
+}
+    tft.print("B");
+    delay(5000);
+    return false;
+  }
+  
+  Serial.print("Memory check passed - proceeding with OTA (");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes available)");
