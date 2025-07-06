@@ -1,11 +1,11 @@
 {
-  "version": "2025.07.07.01",
+  "version": "2025.07.06.44",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "SD card used only for config.json, UI and icons loaded from GitHub",
+  "release_notes": "Remove fallback UI config and update version info",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-07-07 10:00:00 UTC",
-  "commit_hash": "latest",
-  "firmware_size": 1161312,
-  "build_number": 19
+  "build_date": "2025-07-06 21:09:17 UTC",
+  "commit_hash": "1a88f9e",
+  "firmware_size": 1166064,
+  "build_number": 20
 }
