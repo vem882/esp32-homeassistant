@@ -11,43 +11,63 @@
 #include <Update.h>
 
 // Firmware version and OTA configuration
-#define FIRMWARE_VERSION "2025.07.05.31"
+#define FIRMWARE_VERSION "2025.01.06.03"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
+#define ICONS_BASE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/icons/"
 
 // Update intervals
 const unsigned long UPDATE_INTERVAL = 3000;         // HA data update: 3 seconds
-const unsigned long OTA_CHECK_INTERVAL = 200000;    // OTA check: 5 minutes
+const unsigned long OTA_CHECK_INTERVAL = 300000;    // OTA check: 5 minutes
 const unsigned long SCREENSAVER_TIMEOUT = 60000;    // Screensaver: 60 seconds
+const unsigned long SD_RETRY_INTERVAL = 300000;     // SD card retry: 5 minutes
 
 // Device identification
 String deviceId = "";
 unsigned long totalRuntime = 0;
+
+// SD card state tracking
+bool sdCardWorking = false;
+unsigned long lastSDCardCheck = 0;
 
 // Forward declarations
 void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color);
 String generateDeviceId();
 void sendDeviceStats();
 bool updateUIConfig();
-bool downloadFirmwareToSD(const char* firmwareUrl);
-bool applyFirmwareFromSD();
+bool downloadUIConfigFromGitHub();
+bool downloadIconsFromGitHub();
+bool loadAllContentFromGitHub();
 bool isNewerVersion(const char* latestVersion, const char* currentVersion);
-void listSDCardContents();
-void listIconsDirectory();
+bool initSDCard();
+bool initSDWithRetry();
+void testSDCardPins();
+void createFallbackUIConfig();
+void createFallbackConfig();
 
 // Hardware definitions
+// ESP32-2432S028R SPI Bus Configuration:
+// - SD Card uses HSPI bus: CLK=14, MISO=12, MOSI=13, CS=15 (or CS=5 as fallback)
+// - Touchscreen uses VSPI bus: CLK=25, MISO=39, MOSI=32, CS=33
 #define XPT2046_IRQ 36
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
 #define XPT2046_CLK 25
 #define XPT2046_CS 33
-#define SD_CS 5
+#define SD_CS 15        // Primary: 15, Fallback: 5 for ESP32-2432S028R
+#define SD_CS_ALT 5     // Alternative CS pin to try if 15 fails
+
+// SD Card SPI pins (HSPI)
+#define SD_CLK 14
+#define SD_MISO 12
+#define SD_MOSI 13
 
 static const uint16_t screenWidth = 320;
 static const uint16_t screenHeight = 240;
 
-SPIClass touchscreenSPI(VSPI);
+SPIClass touchscreenSPI(VSPI);  // Touchscreen uses VSPI bus
+SPIClass hspi(HSPI);            // SD card uses HSPI bus
 XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
 
@@ -83,9 +103,17 @@ struct TouchPoint {
 
 TouchPoint touch;
 
-// UI Elements loaded from SD
+// UI Elements loaded from GitHub (stored in memory)
 DynamicJsonDocument uiConfig(8192);
 String currentScreen = "main_screen";
+
+// In-memory storage for icons (simple cache)
+struct IconCache {
+  String name;
+  String data;
+};
+IconCache iconCache[10]; // Support up to 10 icons
+int iconCacheCount = 0;
 
 // Simple UI rendering engine
 class UIRenderer {
@@ -256,29 +284,233 @@ UIRenderer ui;
 
 // Core functions
 void loadUIConfig() {
-  if (!SD.exists("/ui_config.json")) {
-    showError("UI CONFIG MISSING");
+  Serial.println("Loading UI configuration from GitHub...");
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, using fallback UI configuration");
+    createFallbackUIConfig();
     return;
   }
   
-  File file = SD.open("/ui_config.json");
-  if (!file) {
-    showError("UI CONFIG ERROR");
+  if (!downloadUIConfigFromGitHub()) {
+    Serial.println("Failed to download UI config from GitHub, using fallback");
+    createFallbackUIConfig();
     return;
   }
   
-  DeserializationError error = deserializeJson(uiConfig, file);
-  file.close();
+  Serial.println("UI configuration loaded from GitHub successfully");
+}
+
+bool initSDCard() {
+  Serial.println("=== SD Card Initialization ===");
+  Serial.print("Using HSPI bus with pins: CLK=");
+  Serial.print(SD_CLK);
+  Serial.print(", MISO=");
+  Serial.print(SD_MISO);
+  Serial.print(", MOSI=");
+  Serial.print(SD_MOSI);
+  Serial.print(", CS=");
+  Serial.println(SD_CS);
   
-  if (error) {
-    showError("UI JSON ERROR");
-    return;
+  // End any existing SD operations
+  SD.end();
+  delay(250); // Longer delay for stability
+  
+  // Initialize HSPI for SD card with explicit pin configuration
+  hspi.end(); // End previous HSPI session
+  delay(50);
+  hspi.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
+  Serial.println("HSPI bus initialized");
+  
+  // Set CS pin as output and high (deselected)
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  delay(50); // Longer delay for SD card to stabilize
+  
+  // Try different SPI frequencies and configurations with primary CS pin (15)
+  Serial.println("Attempting SD card initialization with CS pin 15...");
+  
+  // Try 1: Very slow frequency for problematic cards (400 kHz)
+  Serial.println("Trying 400 kHz (very slow)...");
+  if (SD.begin(SD_CS, hspi, 400000)) {
+    Serial.println("SD card initialized successfully with HSPI at 400 kHz (CS=15)");
+    sdCardWorking = true;
+    return true;
   }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try 2: Slow frequency (1 MHz)
+  Serial.println("Trying 1 MHz...");
+  if (SD.begin(SD_CS, hspi, 1000000)) {
+    Serial.println("SD card initialized successfully with HSPI at 1 MHz (CS=15)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try 3: Medium frequency (4 MHz)
+  Serial.println("Trying 4 MHz...");
+  if (SD.begin(SD_CS, hspi, 4000000)) {
+    Serial.println("SD card initialized successfully with HSPI at 4 MHz (CS=15)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try 4: Default frequency
+  Serial.println("Trying default frequency...");
+  if (SD.begin(SD_CS, hspi)) {
+    Serial.println("SD card initialized successfully with HSPI at default frequency (CS=15)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try with alternative CS pin (5) - common on many ESP32 boards
+  Serial.println("=== Trying alternative CS pin (5) ===");
+  
+  // Reinitialize HSPI with alternative CS pin
+  hspi.end();
+  delay(50);
+  hspi.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS_ALT);
+  
+  pinMode(SD_CS_ALT, OUTPUT);
+  digitalWrite(SD_CS_ALT, HIGH);
+  delay(50);
+  
+  // Try 1: Very slow frequency with CS=5
+  Serial.println("Trying 400 kHz with CS=5...");
+  if (SD.begin(SD_CS_ALT, hspi, 400000)) {
+    Serial.println("SD card initialized successfully with HSPI at 400 kHz (CS=5)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try 2: Slow frequency with CS=5
+  Serial.println("Trying 1 MHz with CS=5...");
+  if (SD.begin(SD_CS_ALT, hspi, 1000000)) {
+    Serial.println("SD card initialized successfully with HSPI at 1 MHz (CS=5)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try 3: Medium frequency with CS=5
+  Serial.println("Trying 4 MHz with CS=5...");
+  if (SD.begin(SD_CS_ALT, hspi, 4000000)) {
+    Serial.println("SD card initialized successfully with HSPI at 4 MHz (CS=5)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try 4: Default frequency with CS=5
+  Serial.println("Trying default frequency with CS=5...");
+  if (SD.begin(SD_CS_ALT, hspi)) {
+    Serial.println("SD card initialized successfully with HSPI at default frequency (CS=5)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try with default VSPI (in case HSPI has issues) - CS=15
+  Serial.println("=== Trying VSPI (default SPI) with CS=15 ===");
+  if (SD.begin(SD_CS, SPI, 400000)) {
+    Serial.println("SD card initialized successfully with default VSPI at 400 kHz (CS=15)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  if (SD.begin(SD_CS, SPI, 1000000)) {
+    Serial.println("SD card initialized successfully with default VSPI at 1 MHz (CS=15)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  if (SD.begin(SD_CS)) {
+    Serial.println("SD card initialized successfully with default VSPI (CS=15)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  // Try with default VSPI - CS=5
+  Serial.println("=== Trying VSPI (default SPI) with CS=5 ===");
+  if (SD.begin(SD_CS_ALT, SPI, 400000)) {
+    Serial.println("SD card initialized successfully with default VSPI at 400 kHz (CS=5)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  delay(500);
+  SD.end();
+  delay(250);
+  
+  if (SD.begin(SD_CS_ALT)) {
+    Serial.println("SD card initialized successfully with default VSPI (CS=5)");
+    sdCardWorking = true;
+    return true;
+  }
+  
+  Serial.println("All SD card initialization attempts failed");
+  Serial.println("Debugging information:");
+  Serial.print("  CS pin 15 state: ");
+  Serial.println(digitalRead(SD_CS));
+  Serial.print("  CS pin 5 state: ");
+  Serial.println(digitalRead(SD_CS_ALT));
+  Serial.print("  MISO pin state: ");
+  Serial.println(digitalRead(SD_MISO));
+  Serial.println("Possible issues:");
+  Serial.println("  - SD card not inserted or faulty");
+  Serial.println("  - Wrong CS pin assignment (try different board)");
+  Serial.println("  - Wiring issues or loose connections");
+  Serial.println("  - SD card not formatted as FAT32");
+  Serial.println("  - Hardware compatibility issues");
+  Serial.println("  - SD card slot may not be connected to these pins");
+  
+  sdCardWorking = false;
+  return false;
 }
 
 bool initSDWithRetry() {
   for (int i = 0; i < 3; i++) {
-    if (SD.begin(SD_CS)) {
+    if (initSDCard()) {
       return true;
     }
     delay(500);
@@ -287,24 +519,24 @@ bool initSDWithRetry() {
 }
 
 void loadConfig() {
-  Serial.println("Loading config.json...");
+  Serial.println("Loading config.json from SD card...");
   
   if (!initSDWithRetry()) {
-    Serial.println("ERROR: SD initialization failed");
-    showError("SD INIT FAIL");
+    Serial.println("SD card not available, using fallback configuration");
+    createFallbackConfig();
     return;
   }
   
   if (!SD.exists("/config.json")) {
-    Serial.println("ERROR: config.json not found on SD card");
-    showError("CONFIG MISSING");
+    Serial.println("config.json not found on SD card, using fallback configuration");
+    createFallbackConfig();
     return;
   }
   
   File file = SD.open("/config.json");
   if (!file) {
-    Serial.println("ERROR: Failed to open config.json");
-    showError("CONFIG ERROR");
+    Serial.println("Failed to open config.json, using fallback configuration");
+    createFallbackConfig();
     return;
   }
   
@@ -315,9 +547,10 @@ void loadConfig() {
   file.close();
   
   if (error) {
-    Serial.print("ERROR: JSON parsing failed: ");
+    Serial.print("JSON parsing failed: ");
     Serial.println(error.c_str());
-    showError("JSON ERROR");
+    Serial.println("Using fallback configuration");
+    createFallbackConfig();
     return;
   }
   
@@ -334,7 +567,7 @@ void loadConfig() {
   config.configured = true;
   
   // Debug output (don't print sensitive data like password/token)
-  Serial.println("Configuration loaded:");
+  Serial.println("Configuration loaded from SD card:");
   Serial.print("  WiFi SSID: ");
   Serial.println(config.ssid);
   Serial.print("  WiFi Password: ");
@@ -351,6 +584,9 @@ void loadConfig() {
   Serial.println(config.climate_entity);
   Serial.print("  Timezone: ");
   Serial.println(config.timezone);
+  
+  // Note: SD card is now only used for config.json
+  Serial.println("Configuration loaded. UI config and icons will be fetched from GitHub after WiFi connection.");
 }
 
 void showError(const char* message) {
@@ -571,63 +807,70 @@ void setup() {
   Serial.println("=== ESP32 Thermostat Starting ===");
   
   // Initialize hardware
-  Serial.println("Initializing SD card...");
-  if (!initSDWithRetry()) {
-    Serial.println("ERROR: SD Card initialization failed!");
-    Serial.println("Please check:");
-    Serial.println("  - SD card is properly inserted");
-    Serial.println("  - SD card is not write-protected");
-    Serial.println("  - SD card is formatted (FAT32 recommended)");
-    Serial.println("  - Wiring connections are correct");
-    showError("SD CARD ERROR");
-  }
-  Serial.println("SD Card initialized successfully");
+  Serial.println("Testing SD card pins...");
+  testSDCardPins();
   
-  // Test SD card read/write capability
-  Serial.println("Testing SD card functionality...");
-  File testFile = SD.open("/sd_test.tmp", FILE_WRITE);
-  if (testFile) {
-    testFile.println("SD card test");
-    testFile.close();
-    Serial.println("SD card write test: PASSED");
-    
-    // Test read back
-    testFile = SD.open("/sd_test.tmp", FILE_READ);
-    if (testFile) {
-      String testContent = testFile.readString();
-      testFile.close();
-      SD.remove("/sd_test.tmp");
-      if (testContent.indexOf("SD card test") >= 0) {
-        Serial.println("SD card read test: PASSED");
-      } else {
-        Serial.println("SD card read test: FAILED - content mismatch");
-      }
-    } else {
-      Serial.println("SD card read test: FAILED - could not read file");
-    }
+  Serial.println("Initializing SD card for config.json reading...");
+  sdCardWorking = initSDWithRetry();
+  if (!sdCardWorking) {
+    Serial.println("WARNING: SD Card initialization failed!");
+    Serial.println("Device will use fallback configuration");
+    Serial.println("UI config and icons will be loaded from GitHub");
   } else {
-    Serial.println("SD card write test: FAILED - card may be write-protected");
+    Serial.println("SD Card initialized successfully for config.json reading");
   }
+  
+  // Note: SD card is now only used for config.json reading
+  // No write operations are performed on SD card
+  // UI config and icons are loaded from GitHub after WiFi connection
   
   // Load configurations
-  Serial.println("Loading configuration...");
-  loadConfig();
-  loadUIConfig();
-  
-  // Debug: List icons directory
-  listIconsDirectory();
+  Serial.println("Loading configuration from SD card...");
+  loadConfig(); // Only load config.json from SD card
   
   // Initialize display
+  Serial.println("Initializing display...");
   tft.init();
   tft.setRotation(1);
   
-  // Initialize touchscreen
+  // Initialize touchscreen with VSPI bus (separate from SD card)
+  Serial.println("Initializing touchscreen...");
+  Serial.print("Using VSPI bus with pins: CLK=");
+  Serial.print(XPT2046_CLK);
+  Serial.print(", MISO=");
+  Serial.print(XPT2046_MISO);
+  Serial.print(", MOSI=");
+  Serial.print(XPT2046_MOSI);
+  Serial.print(", CS=");
+  Serial.println(XPT2046_CS);
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   touchscreen.begin(touchscreenSPI);
   touchscreen.setRotation(1);
+  Serial.println("Touchscreen initialized successfully with VSPI");
   
   // Connect to WiFi with detailed debugging
   connectToWiFi();
+  
+  // After WiFi is connected, load everything else from GitHub
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi connected, loading content from GitHub...");
+    loadAllContentFromGitHub();
+  } else {
+    Serial.println("WiFi not connected, using fallback UI configuration");
+    createFallbackUIConfig();
+  }
+  
+  // Debug: Report what content was loaded
+  Serial.print("UI config elements loaded: ");
+  if (uiConfig.containsKey("main_screen")) {
+    JsonArray elements = uiConfig["main_screen"]["elements"];
+    Serial.println(elements.size());
+  } else {
+    Serial.println("0 (using fallback)");
+  }
+  
+  Serial.print("Icons cached: ");
+  Serial.println(iconCacheCount);
   
   // Setup time
   configTime(0, 0, "pool.ntp.org");
@@ -696,16 +939,15 @@ void loop() {
     lastUpdate = millis();
   }
   
-  // Check for UI config updates every hour
+  // Refresh UI config and icons from GitHub every hour
   static unsigned long lastUIConfigCheck = 0;
   if (millis() - lastUIConfigCheck > 3600000) { // 1 hour
     lastUIConfigCheck = millis();
     
-    Serial.println("Checking for UI config updates...");
-    if (updateUIConfig()) {
-      Serial.println("UI config updated, re-rendering screen");
-      ui.renderScreen(currentScreen.c_str());
-    }
+    Serial.println("Refreshing content from GitHub...");
+    loadAllContentFromGitHub();
+    Serial.println("Content refreshed, re-rendering screen");
+    ui.renderScreen(currentScreen.c_str());
   }
   
   // Check for OTA updates every 5 minutes (300000 ms)
@@ -736,10 +978,16 @@ void loop() {
 void connectToWiFi() {
   Serial.println("=== Starting WiFi Connection ===");
   
+  // Check if configuration is available
+  if (!config.configured) {
+    Serial.println("Configuration not properly loaded, WiFi connection may fail");
+    Serial.println("Device will continue with limited functionality");
+  }
+  
   // Validate configuration
   if (strlen(config.ssid) == 0) {
     Serial.println("ERROR: WiFi SSID is empty!");
-    showError("WIFI SSID EMPTY");
+    Serial.println("WiFi connection skipped - device will run without network connectivity");
     return;
   }
   
@@ -812,8 +1060,7 @@ void connectToWiFi() {
     Serial.println("  - Signal too weak");
     Serial.println("  - Network security issues");
     Serial.println("  - Router configuration problems");
-    
-    showError("WIFI ERROR");
+    Serial.println("Device will continue without WiFi connectivity");
   }
 }
 
@@ -923,17 +1170,113 @@ bool checkForOTAUpdate() {
 }
 
 bool performOTAUpdate(const char* firmwareUrl) {
-  Serial.println("Starting OTA update...");
+  Serial.println("Starting direct OTA update from GitHub...");
   
-  // First download firmware to SD card
-  if (!downloadFirmwareToSD(firmwareUrl)) {
-    Serial.println("Failed to download firmware to SD card");
-    showOTAError("Download failed");
-    return false;
+  HTTPClient http;
+  NetworkClientSecure client;
+  
+  client.setInsecure();
+  http.setTimeout(60000);
+  http.begin(client, firmwareUrl);
+  http.addHeader("User-Agent", "ESP32-HomeAssistant");
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    int contentLength = http.getSize();
+    
+    Serial.print("Firmware size: ");
+    Serial.print(contentLength);
+    Serial.println(" bytes");
+    
+    if (contentLength > 0) {
+      if (!Update.begin(contentLength)) {
+        Serial.println("OTA update begin failed");
+        http.end();
+        return false;
+      }
+      
+      // Show update progress on screen
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(10, 50);
+      tft.println("Updating");
+      tft.setCursor(10, 80);
+      tft.println("Firmware...");
+      
+      WiFiClient* stream = http.getStreamPtr();
+      size_t written = 0;
+      uint8_t buffer[1024];
+      int lastProgress = -1;
+      
+      while (http.connected() && (written < contentLength)) {
+        size_t available = stream->available();
+        if (available > 0) {
+          size_t readBytes = stream->readBytes(buffer, min(available, sizeof(buffer)));
+          
+          if (readBytes > 0) {
+            size_t writtenBytes = Update.write(buffer, readBytes);
+            written += writtenBytes;
+            
+            // Update progress display
+            int progress = (written * 100) / contentLength;
+            if (progress != lastProgress) {
+              lastProgress = progress;
+              
+              // Update screen
+              tft.fillRect(10, 120, 220, 50, TFT_BLACK);
+              tft.setCursor(10, 120);
+              tft.print("Progress: ");
+              tft.print(progress);
+              tft.print("%");
+              
+              // Draw progress bar
+              int barWidth = (progress * 200) / 100;
+              tft.fillRect(10, 150, barWidth, 15, TFT_BLUE);
+              tft.drawRect(10, 150, 200, 15, TFT_WHITE);
+              
+              Serial.print("OTA progress: ");
+              Serial.print(progress);
+              Serial.println("%");
+            }
+            
+            if (writtenBytes != readBytes) {
+              Serial.println("Error writing firmware");
+              http.end();
+              return false;
+            }
+          }
+        }
+        yield();
+      }
+      
+      if (Update.end(true)) {
+        Serial.println("OTA update successful!");
+        
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(10, 50);
+        tft.setTextColor(TFT_GREEN);
+        tft.println("Update Complete!");
+        tft.setCursor(10, 80);
+        tft.setTextColor(TFT_WHITE);
+        tft.println("Restarting...");
+        
+        delay(3000);
+        ESP.restart();
+        return true;
+      } else {
+        Serial.print("OTA update failed: ");
+        Serial.println(Update.errorString());
+      }
+    }
+  } else {
+    Serial.print("HTTP error downloading firmware: ");
+    Serial.println(httpCode);
   }
   
-  // Then apply firmware from SD card
-  return applyFirmwareFromSD();
+  http.end();
+  return false;
 }
 
 void updateOTAProgress(int progress) {
@@ -979,74 +1322,63 @@ void showOTAError(const char* error) {
   tft.println("current firmware");
 }
 
-// SVG icon rendering support - FIXED
+// SVG icon rendering support - Updated to use memory cache
 void drawSVGIcon(const char* iconName, int x, int y, int size, uint16_t color) {
-  String iconPath = "/icons/" + String(iconName) + ".svg";
-  
-  Serial.print("Drawing icon: ");
+  Serial.print("Drawing icon from memory: ");
   Serial.print(iconName);
-  Serial.print(" at ");
-  Serial.print(iconPath);
   
-  if (SD.exists(iconPath)) {
-    Serial.println(" (file exists)");
-    
-    // Simple SVG parsing for basic shapes
-    File svgFile = SD.open(iconPath);
-    if (svgFile) {
-      // Skip parsing and use hardcoded drawing for known icons
-      svgFile.close();
-      
-      // WiFi icons - use hardcoded drawing for better performance
-      if (String(iconName).indexOf("wifi") >= 0) {
-        if (String(iconName) == "wifi_full") {
-          // Draw full WiFi signal (3 arcs)
-          tft.drawCircle(x + size/2, y + size - 4, size/4, color);
-          tft.drawCircle(x + size/2, y + size - 4, size/2, color);
-          tft.drawCircle(x + size/2, y + size - 4, 3*size/4, color);
-          tft.fillCircle(x + size/2, y + size - 4, 2, color);
-        } else if (String(iconName) == "wifi_good") {
-          // Draw good WiFi signal (2 arcs)
-          tft.drawCircle(x + size/2, y + size - 4, size/4, color);
-          tft.drawCircle(x + size/2, y + size - 4, size/2, color);
-          tft.fillCircle(x + size/2, y + size - 4, 2, color);
-        } else if (String(iconName) == "wifi_weak") {
-          // Draw weak WiFi signal (1 arc)
-          tft.drawCircle(x + size/2, y + size - 4, size/4, color);
-          tft.fillCircle(x + size/2, y + size - 4, 2, color);
-        } else if (String(iconName) == "wifi_poor") {
-          // Draw poor WiFi signal (just dot)
-          tft.fillCircle(x + size/2, y + size - 4, 2, color);
-        } else if (String(iconName) == "wifi_off") {
-          // Draw WiFi off (X mark)
-          tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, color);
-          tft.drawLine(x + size - 2, y + 2, x + 2, y + size - 2, color);
-        }
-      }
-      // Thermometer icon
-      else if (String(iconName) == "thermometer") {
-        // Draw simple thermometer
-        tft.drawRect(x + size/2 - 2, y + 2, 4, size - 8, color);
-        tft.fillCircle(x + size/2, y + size - 4, 4, color);
-      }
-      // Fallback for other icons
-      else {
-        // Draw a placeholder
-        tft.drawRect(x, y, size, size, color);
-        tft.drawLine(x, y, x + size, y + size, color);
-        tft.drawLine(x + size, y, x, y + size, color);
-      }
-    } else {
-      Serial.println(" (could not open file)");
-      // Icon file exists but can't be opened, draw placeholder
-      tft.drawRect(x, y, size, size, TFT_YELLOW);
-      tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, TFT_YELLOW);
+  // Check if icon exists in memory cache
+  bool iconFound = false;
+  for (int i = 0; i < iconCacheCount; i++) {
+    if (iconCache[i].name == String(iconName)) {
+      iconFound = true;
+      Serial.println(" (found in cache)");
+      break;
     }
-  } else {
-    Serial.println(" (file not found)");
-    // Icon not found, draw placeholder
-    tft.drawRect(x, y, size, size, TFT_RED);
-    tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, TFT_RED);
+  }
+  
+  if (!iconFound) {
+    Serial.println(" (not found in cache)");
+  }
+  
+  // Use hardcoded drawing for better performance and reliability
+  if (String(iconName).indexOf("wifi") >= 0) {
+    if (String(iconName) == "wifi_full") {
+      // Draw full WiFi signal (3 arcs)
+      tft.drawCircle(x + size/2, y + size - 4, size/4, color);
+      tft.drawCircle(x + size/2, y + size - 4, size/2, color);
+      tft.drawCircle(x + size/2, y + size - 4, 3*size/4, color);
+      tft.fillCircle(x + size/2, y + size - 4, 2, color);
+    } else if (String(iconName) == "wifi_good") {
+      // Draw good WiFi signal (2 arcs)
+      tft.drawCircle(x + size/2, y + size - 4, size/4, color);
+      tft.drawCircle(x + size/2, y + size - 4, size/2, color);
+      tft.fillCircle(x + size/2, y + size - 4, 2, color);
+    } else if (String(iconName) == "wifi_weak") {
+      // Draw weak WiFi signal (1 arc)
+      tft.drawCircle(x + size/2, y + size - 4, size/4, color);
+      tft.fillCircle(x + size/2, y + size - 4, 2, color);
+    } else if (String(iconName) == "wifi_poor") {
+      // Draw poor WiFi signal (just dot)
+      tft.fillCircle(x + size/2, y + size - 4, 2, color);
+    } else if (String(iconName) == "wifi_off") {
+      // Draw WiFi off (X mark)
+      tft.drawLine(x + 2, y + 2, x + size - 2, y + size - 2, color);
+      tft.drawLine(x + size - 2, y + 2, x + 2, y + size - 2, color);
+    }
+  }
+  // Thermometer icon
+  else if (String(iconName) == "thermometer") {
+    // Draw simple thermometer
+    tft.drawRect(x + size/2 - 2, y + 2, 4, size - 8, color);
+    tft.fillCircle(x + size/2, y + size - 4, 4, color);
+  }
+  // Fallback for other icons
+  else {
+    // Draw a placeholder
+    tft.drawRect(x, y, size, size, color);
+    tft.drawLine(x, y, x + size, y + size, color);
+    tft.drawLine(x + size, y, x, y + size, color);
   }
 }
 
@@ -1095,55 +1427,10 @@ void sendDeviceStats() {
   // For now, stats are logged to Serial for debugging
 }
 
-// Download and update UI config from repository
+// Refresh UI config from GitHub (simplified)
 bool updateUIConfig() {
-  HTTPClient http;
-  NetworkClientSecure client;
-  
-  Serial.println("Checking for UI config updates...");
-  
-  // Skip certificate verification for GitHub
-  client.setInsecure();
-  
-  http.setTimeout(15000);
-  http.begin(client, UI_CONFIG_URL);
-  http.addHeader("User-Agent", "ESP32-HomeAssistant");
-  
-  int httpCode = http.GET();
-  
-  if (httpCode == HTTP_CODE_OK) {
-    String payload = http.getString();
-    
-    // Reset SD card before writing
-    SD.end();
-    if (!initSDWithRetry()) {
-      Serial.println("SD re-init failed for UI config update");
-      return false;
-    }
-    
-    // Save new UI config to SD card
-    File file = SD.open("/ui_config.json", FILE_WRITE);
-    if (file) {
-      file.print(payload);
-      file.close();
-      Serial.println("UI config written to SD card");
-      
-      // Reload UI config
-      loadUIConfig();
-      
-      Serial.println("UI config updated successfully");
-      http.end();
-      return true;
-    } else {
-      Serial.println("Failed to open ui_config.json for writing");
-    }
-  } else {
-    Serial.print("UI config update failed, HTTP code: ");
-    Serial.println(httpCode);
-  }
-  
-  http.end();
-  return false;
+  Serial.println("Refreshing UI config from GitHub...");
+  return downloadUIConfigFromGitHub();
 }
 
 // Download firmware to SD card for safer updates
@@ -1526,6 +1813,12 @@ void listSDCardContents() {
 void listIconsDirectory() {
   Serial.println("=== Icons Directory Contents ===");
   
+  // Ensure SD card is initialized
+  if (!initSDWithRetry()) {
+    Serial.println("SD card not accessible for icons listing");
+    return;
+  }
+  
   if (!SD.exists("/icons")) {
     Serial.println("Icons directory does not exist");
     return;
@@ -1559,4 +1852,358 @@ void listIconsDirectory() {
   }
   iconsDir.close();
   Serial.println("=== End Icons Directory ===");
+}
+
+// Test SD card pins functionality
+void testSDCardPins() {
+  Serial.println("=== SD Card Pin Test ===");
+  
+  // Test CS pins
+  Serial.println("Testing CS pins...");
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  delay(10);
+  Serial.print("CS pin 15 HIGH: ");
+  Serial.println(digitalRead(SD_CS));
+  
+  digitalWrite(SD_CS, LOW);
+  delay(10);
+  Serial.print("CS pin 15 LOW: ");
+  Serial.println(digitalRead(SD_CS));
+  
+  pinMode(SD_CS_ALT, OUTPUT);
+  digitalWrite(SD_CS_ALT, HIGH);
+  delay(10);
+  Serial.print("CS pin 5 HIGH: ");
+  Serial.println(digitalRead(SD_CS_ALT));
+  
+  digitalWrite(SD_CS_ALT, LOW);
+  delay(10);
+  Serial.print("CS pin 5 LOW: ");
+  Serial.println(digitalRead(SD_CS_ALT));
+  
+  // Test other pins as inputs (to check for shorts)
+  pinMode(SD_CLK, INPUT_PULLUP);
+  pinMode(SD_MISO, INPUT_PULLUP);
+  pinMode(SD_MOSI, INPUT_PULLUP);
+  
+  delay(10);
+  Serial.print("CLK pin 14 (pullup): ");
+  Serial.println(digitalRead(SD_CLK));
+  Serial.print("MISO pin 12 (pullup): ");
+  Serial.println(digitalRead(SD_MISO));
+  Serial.print("MOSI pin 13 (pullup): ");
+  Serial.println(digitalRead(SD_MOSI));
+  
+  Serial.println("Pin test completed");
+}
+
+// Fallback UI configuration (used when SD card fails)
+void createFallbackUIConfig() {
+  Serial.println("Creating fallback UI configuration...");
+  
+  // Clear existing config
+  uiConfig.clear();
+  
+  // Create basic main screen
+  JsonObject mainScreen = uiConfig.createNestedObject("main_screen");
+  mainScreen["background"] = "#000000";
+  
+  JsonArray elements = mainScreen.createNestedArray("elements");
+  
+  // Temperature display
+  JsonObject tempDisplay = elements.createNestedObject();
+  tempDisplay["name"] = "temp_display";
+  tempDisplay["type"] = "label";
+  tempDisplay["x"] = 160;
+  tempDisplay["y"] = 80;
+  tempDisplay["text"] = "21.0°";
+  tempDisplay["font_size"] = 32;
+  tempDisplay["color"] = "#FFFFFF";
+  tempDisplay["align"] = "center";
+  
+  // Target temperature
+  JsonObject targetTemp = elements.createNestedObject();
+  targetTemp["name"] = "target_temp";
+  targetTemp["type"] = "label";
+  targetTemp["x"] = 160;
+  targetTemp["y"] = 120;
+  targetTemp["text"] = "Target: 21.0°";
+  targetTemp["font_size"] = 16;
+  targetTemp["color"] = "#AAAAAA";
+  targetTemp["align"] = "center";
+  
+  // Increase button
+  JsonObject incButton = elements.createNestedObject();
+  incButton["name"] = "temp_increase";
+  incButton["type"] = "button";
+  incButton["x"] = 220;
+  incButton["y"] = 100;
+  incButton["width"] = 60;
+  incButton["height"] = 40;
+  incButton["text"] = "+";
+  incButton["bg_color"] = "#333333";
+  incButton["text_color"] = "#FFFFFF";
+  incButton["action"] = "temp_increase";
+  
+  // Decrease button
+  JsonObject decButton = elements.createNestedObject();
+  decButton["name"] = "temp_decrease";
+  decButton["type"] = "button";
+  decButton["x"] = 100;
+  decButton["y"] = 100;
+  decButton["width"] = 60;
+  decButton["height"] = 40;
+  decButton["text"] = "-";
+  decButton["bg_color"] = "#333333";
+  decButton["text_color"] = "#FFFFFF";
+  decButton["action"] = "temp_decrease";
+  
+  // Clock
+  JsonObject clock = elements.createNestedObject();
+  clock["name"] = "clock";
+  clock["type"] = "label";
+  clock["x"] = 160;
+  clock["y"] = 20;
+  clock["text"] = "00:00";
+  clock["font_size"] = 16;
+  clock["color"] = "#888888";
+  clock["align"] = "center";
+  
+  // WiFi strength
+  JsonObject wifiStrength = elements.createNestedObject();
+  wifiStrength["name"] = "wifi_strength";
+  wifiStrength["type"] = "label";
+  wifiStrength["x"] = 300;
+  wifiStrength["y"] = 20;
+  wifiStrength["text"] = "N/A";
+  wifiStrength["font_size"] = 12;
+  wifiStrength["color"] = "#888888";
+  wifiStrength["align"] = "right";
+  
+  // Firmware version
+  JsonObject fwVersion = elements.createNestedObject();
+  fwVersion["name"] = "firmware_version";
+  fwVersion["type"] = "label";
+  fwVersion["x"] = 300;
+  fwVersion["y"] = 220;
+  fwVersion["text"] = "v" + String(FIRMWARE_VERSION);
+  fwVersion["font_size"] = 10;
+  fwVersion["color"] = "#444444";
+  fwVersion["align"] = "right";
+  
+  // SD card error indicator
+  JsonObject sdError = elements.createNestedObject();
+  sdError["name"] = "sd_error";
+  sdError["type"] = "label";
+  sdError["x"] = 20;
+  sdError["y"] = 220;
+  sdError["text"] = "SD ERROR";
+  sdError["font_size"] = 10;
+  sdError["color"] = "#FF0000";
+  sdError["align"] = "left";
+  
+  // Create basic screensaver
+  JsonObject screensaver = uiConfig.createNestedObject("screensaver");
+  screensaver["background"] = "#000000";
+  
+  JsonArray ssElements = screensaver.createNestedArray("elements");
+  
+  // Large clock for screensaver
+  JsonObject largeClock = ssElements.createNestedObject();
+  largeClock["name"] = "large_clock";
+  largeClock["type"] = "label";
+  largeClock["x"] = 160;
+  largeClock["y"] = 100;
+  largeClock["text"] = "00:00";
+  largeClock["font_size"] = 48;
+  largeClock["color"] = "#FFFFFF";
+  largeClock["align"] = "center";
+  
+  // Date for screensaver
+  JsonObject date = ssElements.createNestedObject();
+  date["name"] = "date";
+  date["type"] = "label";
+  date["x"] = 160;
+  date["y"] = 140;
+  date["text"] = "Mon, 01 Jan";
+  date["font_size"] = 16;
+  date["color"] = "#888888";
+  date["align"] = "center";
+  
+  Serial.println("Fallback UI configuration created");
+}
+
+// Create fallback configuration when SD card fails
+void createFallbackConfig() {
+  Serial.println("Creating fallback configuration...");
+  
+  // Set default values
+  strcpy(config.ssid, "");
+  strcpy(config.password, "");
+  strcpy(config.timezone, "UTC");
+  strcpy(config.ha_host, "192.168.1.100");
+  config.ha_port = 8123;
+  strcpy(config.ha_token, "");
+  strcpy(config.temperature_sensor, "sensor.temperature");
+  strcpy(config.climate_entity, "climate.thermostat");
+  strcpy(config.weather_entity, "weather.home");
+  config.configured = false; // Mark as not properly configured
+  
+  Serial.println("Fallback configuration created (device will have limited functionality)");
+}
+
+// New GitHub download functions
+bool downloadUIConfigFromGitHub() {
+  if (strlen(config.ha_host) == 0) {
+    Serial.println("No GitHub configuration available");
+    return false;
+  }
+  
+  // Use predefined GitHub URL for ui_config.json
+  String githubUrl = UI_CONFIG_URL;
+  
+  HTTPClient http;
+  http.begin(githubUrl);
+  http.addHeader("User-Agent", "ESP32-HomeAssistant/1.0");
+  
+  int httpResponseCode = http.GET();
+  
+  if (httpResponseCode == HTTP_CODE_OK) {
+    String response = http.getString();
+    
+    // Parse and store UI config in memory
+    DeserializationError error = deserializeJson(uiConfig, response);
+    if (error) {
+      Serial.print("Failed to parse UI config from GitHub: ");
+      Serial.println(error.c_str());
+      http.end();
+      return false;
+    }
+    
+    Serial.println("UI config downloaded from GitHub successfully");
+    http.end();
+    return true;
+  } else {
+    Serial.print("Failed to download UI config from GitHub: ");
+    Serial.println(httpResponseCode);
+    http.end();
+    return false;
+  }
+}
+
+// Download icons from GitHub
+bool downloadIconsFromGitHub() {
+  Serial.println("Downloading icons from GitHub...");
+  
+  // Icon list to download
+  const char* iconNames[] = {
+    "thermometer.svg",
+    "wifi_full.svg", 
+    "wifi_good.svg",
+    "wifi_weak.svg",
+    "wifi_poor.svg",
+    "wifi_off.svg"
+  };
+  
+  iconCacheCount = 0;
+  
+  for (int i = 0; i < 6 && iconCacheCount < 10; i++) {
+    String githubUrl = String(ICONS_BASE_URL) + iconNames[i];
+    
+    HTTPClient http;
+    http.begin(githubUrl);
+    http.addHeader("User-Agent", "ESP32-HomeAssistant/1.0");
+    
+    int httpResponseCode = http.GET();
+    
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String iconData = http.getString();
+      
+      // Store in memory cache
+      iconCache[iconCacheCount].name = String(iconNames[i]);
+      iconCache[iconCacheCount].data = iconData;
+      iconCacheCount++;
+      
+      Serial.print("Downloaded icon: ");
+      Serial.println(iconNames[i]);
+    } else {
+      Serial.print("Failed to download icon ");
+      Serial.print(iconNames[i]);
+      Serial.print(": ");
+      Serial.println(httpResponseCode);
+    }
+    
+    http.end();
+    delay(100); // Small delay between requests
+  }
+  
+  Serial.print("Downloaded ");
+  Serial.print(iconCacheCount);
+  Serial.println(" icons from GitHub");
+  return iconCacheCount > 0;
+}
+
+// Load all content from GitHub after WiFi connection
+void loadAllContentFromGitHub() {
+  Serial.println("Loading all content from GitHub...");
+  
+  // Download UI config
+  if (!downloadUIConfigFromGitHub()) {
+    Serial.println("Using fallback UI config");
+    createFallbackUIConfig();
+  }
+  
+  // Download icons
+  if (!downloadIconsFromGitHub()) {
+    Serial.println("Icon download failed, using fallback icons");
+  }
+  
+  Serial.println("GitHub content loading completed");
+}
+
+// Create fallback UI config
+void createFallbackUIConfig() {
+  Serial.println("Creating fallback UI config...");
+  
+  const char* fallbackConfig = R"({
+    "main_screen": {
+      "title": "Home Thermostat",
+      "background_color": "#000000",
+      "text_color": "#FFFFFF",
+      "elements": [
+        {
+          "type": "temperature_display",
+          "x": 80,
+          "y": 50,
+          "width": 160,
+          "height": 60,
+          "font_size": 4
+        },
+        {
+          "type": "target_temperature",
+          "x": 80,
+          "y": 120,
+          "width": 160,
+          "height": 40,
+          "font_size": 2
+        },
+        {
+          "type": "wifi_indicator",
+          "x": 280,
+          "y": 10,
+          "width": 30,
+          "height": 20
+        }
+      ]
+    }
+  })";
+  
+  DeserializationError error = deserializeJson(uiConfig, fallbackConfig);
+  if (error) {
+    Serial.print("Failed to create fallback UI config: ");
+    Serial.println(error.c_str());
+  } else {
+    Serial.println("Fallback UI config created successfully");
+  }
 }
