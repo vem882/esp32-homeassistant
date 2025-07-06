@@ -1,11 +1,11 @@
 {
-  "version": "2025.01.10.48",
+  "version": "2025.01.10.49",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Memory-optimized OTA updates: Ultra-aggressive memory cleanup with reduced memory requirements. OTA now requires only 60KB instead of 100KB+ free memory. Smaller 64-byte buffers for maximum efficiency. Enhanced memory monitoring during OTA process. Fixed memory management to handle large firmware updates even with limited free heap.",
+  "release_notes": "Refactor version management and update workflows",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-01-10 13:00:00 UTC",
-  "commit_hash": "memopt001",
+  "build_date": "2025-07-06 21:58:33 UTC",
+  "commit_hash": "1baf160",
   "firmware_size": 1166704,
-  "build_number": 48
+  "build_number": 25
 }
