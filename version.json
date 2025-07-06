@@ -1,11 +1,11 @@
 {
-  "version": "2025.07.05.40",
+  "version": "2025.07.07.01",
   "firmware_url": "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin",
-  "release_notes": "Update sketch_jul3a.ino",
+  "release_notes": "SD card used only for config.json, UI and icons loaded from GitHub",
   "min_version": "1.0.0",
   "force_update": false,
-  "build_date": "2025-07-05 23:14:03 UTC",
-  "commit_hash": "28536e0",
+  "build_date": "2025-07-07 10:00:00 UTC",
+  "commit_hash": "latest",
   "firmware_size": 1161312,
-  "build_number": 18
+  "build_number": 19
 }

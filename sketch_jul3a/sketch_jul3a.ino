@@ -38,7 +38,7 @@ void sendDeviceStats();
 bool updateUIConfig();
 bool downloadUIConfigFromGitHub();
 bool downloadIconsFromGitHub();
-bool loadAllContentFromGitHub();
+void loadAllContentFromGitHub();
 bool isNewerVersion(const char* latestVersion, const char* currentVersion);
 bool initSDCard();
 bool initSDWithRetry();
@@ -2160,50 +2160,4 @@ void loadAllContentFromGitHub() {
   }
   
   Serial.println("GitHub content loading completed");
-}
-
-// Create fallback UI config
-void createFallbackUIConfig() {
-  Serial.println("Creating fallback UI config...");
-  
-  const char* fallbackConfig = R"({
-    "main_screen": {
-      "title": "Home Thermostat",
-      "background_color": "#000000",
-      "text_color": "#FFFFFF",
-      "elements": [
-        {
-          "type": "temperature_display",
-          "x": 80,
-          "y": 50,
-          "width": 160,
-          "height": 60,
-          "font_size": 4
-        },
-        {
-          "type": "target_temperature",
-          "x": 80,
-          "y": 120,
-          "width": 160,
-          "height": 40,
-          "font_size": 2
-        },
-        {
-          "type": "wifi_indicator",
-          "x": 280,
-          "y": 10,
-          "width": 30,
-          "height": 20
-        }
-      ]
-    }
-  })";
-  
-  DeserializationError error = deserializeJson(uiConfig, fallbackConfig);
-  if (error) {
-    Serial.print("Failed to create fallback UI config: ");
-    Serial.println(error.c_str());
-  } else {
-    Serial.println("Fallback UI config created successfully");
-  }
 }
