@@ -2175,11 +2175,3 @@ void aggressiveMemoryCleanup() {
   Serial.println(" bytes");
   Serial.println("=== MEMORY CLEANUP COMPLETE ===");
 }
-    tft.print("B");
-    delay(5000);
-    return false;
-  }
-  
-  Serial.print("Memory check passed - proceeding with OTA (");
-  Serial.print(ESP.getFreeHeap());
-  Serial.println(" bytes available)");

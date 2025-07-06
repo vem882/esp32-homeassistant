@@ -81,16 +81,21 @@ jobs:
         echo "Installed libraries:"
         arduino-cli lib list
     
-    - name: Update firmware version in code
+    - name: Check version consistency
       run: |
-        VERSION="${{ github.event.inputs.version }}"
-        echo "Updating firmware version to: $VERSION"
+        INPUT_VERSION="${{ github.event.inputs.version }}"
+        SKETCH_VERSION=$(grep -o '#define FIRMWARE_VERSION "[^"]*"' sketch_jul3a/sketch_jul3a.ino | sed 's/#define FIRMWARE_VERSION "//' | sed 's/"//')
         
-        # Update version in sketch file
-        sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" sketch_jul3a/sketch_jul3a.ino
+        echo "Input version: $INPUT_VERSION"
+        echo "Sketch version: $SKETCH_VERSION"
         
-        # Verify the change
-        grep "FIRMWARE_VERSION" sketch_jul3a/sketch_jul3a.ino
+        if [ "$INPUT_VERSION" != "$SKETCH_VERSION" ]; then
+          echo "Warning: Input version ($INPUT_VERSION) differs from sketch version ($SKETCH_VERSION)"
+          echo "The version.json will use the input version, but sketch will remain unchanged"
+          echo "Please manually update sketch_jul3a.ino if you want them to match"
+        else
+          echo "Version consistency check passed: versions match"
+        fi
     
     - name: Build firmware
       run: |
@@ -170,18 +175,22 @@ jobs:
       run: |
         VERSION="${{ github.event.inputs.version }}"
         
-        # Add files to git
-        git add sketch_jul3a/sketch_jul3a.ino
+        # Add only firmware.bin and version.json to git (NOT the sketch file)
         git add firmware.bin
         git add version.json
         
-        # Commit changes
-        git commit -m "Manual release: Version $VERSION [skip ci]"
-        
-        # Push changes
-        git push origin main
-        
-        echo "Committed and pushed version $VERSION"
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Commit changes
+          git commit -m "Manual release: Version $VERSION (using manual version input) [skip ci]"
+          
+          # Push changes
+          git push origin main
+          
+          echo "Committed and pushed firmware and version.json for manual version $VERSION"
+        fi
     
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1

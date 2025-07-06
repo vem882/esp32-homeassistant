@@ -53,36 +53,33 @@ jobs:
         echo "Installed libraries:"
         arduino-cli lib list
     
-    - name: Generate version number
+    - name: Extract version from sketch
       id: version
       run: |
-        # Get current date and time
-        VERSION_DATE=$(date +'%Y.%m.%d')
-        VERSION_TIME=$(date +'%H%M')
+        # Extract version from sketch_jul3a.ino file
+        VERSION=$(grep -o '#define FIRMWARE_VERSION "[^"]*"' sketch_jul3a/sketch_jul3a.ino | sed 's/#define FIRMWARE_VERSION "//' | sed 's/"//')
+        
+        if [ -z "$VERSION" ]; then
+          echo "Error: Could not extract version from sketch_jul3a.ino"
+          exit 1
+        fi
         
         # Get short commit hash
         COMMIT_HASH=$(git rev-parse --short HEAD)
         
-        # Get commit count since last tag (or since beginning if no tags)
-        COMMIT_COUNT=$(git rev-list --count HEAD)
-        
-        # Generate version: YYYY.MM.DD.BUILDNUMBER
-        VERSION="${VERSION_DATE}.${COMMIT_COUNT}"
-        
-        echo "Generated version: $VERSION"
+        echo "Found version in sketch: $VERSION"
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
         echo "build_date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
     
-    - name: Update firmware version in code (temporary)
+    - name: Use version from sketch (no changes to sketch)
       run: |
         VERSION="${{ steps.version.outputs.version }}"
-        echo "Updating firmware version to: $VERSION"
+        echo "Using version from sketch: $VERSION"
         
-        # Update version in sketch file (temporary, not committed)
-        sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" sketch_jul3a/sketch_jul3a.ino
-        
-        # Verify the change
+        # Show the current FIRMWARE_VERSION line in the sketch
+        echo "Current FIRMWARE_VERSION in sketch:"
+        grep "FIRMWARE_VERSION" sketch_jul3a/sketch_jul3a.ino
         grep "FIRMWARE_VERSION" sketch_jul3a/sketch_jul3a.ino
     
     - name: Build firmware

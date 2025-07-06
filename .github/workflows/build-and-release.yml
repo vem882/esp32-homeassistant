@@ -58,36 +58,37 @@ jobs:
         echo "Installed libraries:"
         arduino-cli lib list
     
-    - name: Generate version number
+    - name: Extract version from sketch
       id: version
       run: |
-        # Get current date and time
-        VERSION_DATE=$(date +'%Y.%m.%d')
-        VERSION_TIME=$(date +'%H%M')
+        # Extract version from sketch_jul3a.ino file
+        VERSION=$(grep -o '#define FIRMWARE_VERSION "[^"]*"' sketch_jul3a/sketch_jul3a.ino | sed 's/#define FIRMWARE_VERSION "//' | sed 's/"//')
+        
+        if [ -z "$VERSION" ]; then
+          echo "Error: Could not extract version from sketch_jul3a.ino"
+          exit 1
+        fi
         
         # Get short commit hash
         COMMIT_HASH=$(git rev-parse --short HEAD)
         
-        # Get commit count since last tag (or since beginning if no tags)
-        COMMIT_COUNT=$(git rev-list --count HEAD)
-        
-        # Generate version: YYYY.MM.DD.BUILDNUMBER
-        VERSION="${VERSION_DATE}.${COMMIT_COUNT}"
-        
-        echo "Generated version: $VERSION"
+        echo "Found version in sketch: $VERSION"
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
         echo "build_date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
     
-    - name: Update firmware version in code
+    - name: Verify extracted version
       run: |
         VERSION="${{ steps.version.outputs.version }}"
-        echo "Updating firmware version to: $VERSION"
+        echo "Using version from sketch: $VERSION"
         
-        # Update version in sketch file
-        sed -i "s/#define FIRMWARE_VERSION \".*\"/#define FIRMWARE_VERSION \"$VERSION\"/" sketch_jul3a/sketch_jul3a.ino
+        # Verify the version format (should be like YYYY.MM.DD.NN)
+        if [[ ! $VERSION =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+          echo "Warning: Version format may not match expected pattern (YYYY.MM.DD.NN): $VERSION"
+        fi
         
-        # Verify the change
+        # Show the current FIRMWARE_VERSION line in the sketch
+        echo "Current FIRMWARE_VERSION in sketch:"
         grep "FIRMWARE_VERSION" sketch_jul3a/sketch_jul3a.ino
     
     - name: Build firmware
@@ -168,8 +169,7 @@ jobs:
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         
-        # Add files to git
-        git add sketch_jul3a/sketch_jul3a.ino
+        # Add only firmware.bin and version.json to git (NOT the sketch file)
         git add firmware.bin
         git add version.json
         
@@ -178,12 +178,12 @@ jobs:
           echo "No changes to commit"
         else
           # Commit changes
-          git commit -m "Auto-build: Release version $VERSION [skip ci]"
+          git commit -m "Auto-build: Release version $VERSION (from manual version update) [skip ci]"
           
           # Push changes
           git push origin main
           
-          echo "Committed and pushed version $VERSION"
+          echo "Committed and pushed firmware and version.json for version $VERSION"
         fi
     
     - name: Create GitHub Release
@@ -234,8 +234,8 @@ jobs:
         echo "- **Firmware URL:** https://raw.githubusercontent.com/${{ github.repository }}/main/firmware.bin" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Files Updated:" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ sketch_jul3a/sketch_jul3a.ino (version updated)" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ firmware.bin (compiled)" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ version.json (created)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ sketch_jul3a/sketch_jul3a.ino (version read: ${{ steps.version.outputs.version }})" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ firmware.bin (compiled from your version)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ version.json (updated to match sketch version)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "Devices will automatically update within 6 hours!" >> $GITHUB_STEP_SUMMARY

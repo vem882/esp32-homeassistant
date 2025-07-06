@@ -232,3 +232,33 @@ For issues and questions:
 2. Review Serial debug output
 3. Check GitHub Actions build logs
 4. Create an issue on GitHub with detailed information
+
+## Version Management
+
+This project uses a manual version control system:
+
+### How to Release a New Version
+
+1. **Update Version in Code**: 
+   - Edit `sketch_jul3a/sketch_jul3a.ino`
+   - Change the `FIRMWARE_VERSION` define to your desired version (e.g., "2025.01.10.49")
+   - Use format: `YYYY.MM.DD.BUILD` (e.g., 2025.01.10.49)
+
+2. **Commit and Push**:
+   - Commit your changes to the main branch
+   - GitHub Actions will automatically:
+     - Read the version from your sketch file
+     - Build firmware using YOUR version number
+     - Update `version.json` to match your version
+     - Create release artifacts
+
+3. **Manual Release** (optional):
+   - Use GitHub Actions "Manual Release" workflow
+   - Specify version and release notes
+   - This will build firmware and create a GitHub release
+
+### Important Notes
+- **The sketch file version is the master version** - workflows read from it, never modify it
+- Version format should be `YYYY.MM.DD.BUILD` (e.g., 2025.01.10.48)
+- GitHub Actions will NOT change your sketch file - only build from it
+- `version.json` is automatically updated to match your sketch version
