@@ -11,7 +11,7 @@
 #include <Update.h>
 
 // Firmware version and OTA configuration
-#define FIRMWARE_VERSION "2025.07.06.46"
+#define FIRMWARE_VERSION "2025.01.10.47"
 #define OTA_UPDATE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/version.json"
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/firmware.bin"
 #define UI_CONFIG_URL "https://raw.githubusercontent.com/vem882/esp32-homeassistant/main/sd_files/ui_config.json"
@@ -43,7 +43,6 @@ bool isNewerVersion(const char* latestVersion, const char* currentVersion);
 bool initSDCard();
 bool initSDWithRetry();
 void testSDCardPins();
-void createFallbackUIConfig();
 void createFallbackConfig();
 
 // Hardware definitions
@@ -221,8 +220,21 @@ private:
   }
   
 public:
+  void drawSingleElement(JsonObject element) {
+    drawElement(element);
+  }
+  
   void renderScreen(const char* screenName) {
-    if (!uiConfig.containsKey(screenName)) return;
+    if (!uiConfig.containsKey(screenName)) {
+      // If no UI config available, just show a black screen with loading text
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.setTextSize(2);
+      tft.drawCentreString("Loading UI...", screenWidth/2, screenHeight/2 - 20, 2);
+      tft.setTextSize(1);
+      tft.drawCentreString("Waiting for UI config from GitHub", screenWidth/2, screenHeight/2 + 10, 2);
+      return;
+    }
     
     JsonObject screen = uiConfig[screenName];
     
@@ -282,240 +294,66 @@ public:
 
 UIRenderer ui;
 
+// Helper function to draw a single element
+void drawSingleElement(JsonObject element) {
+  ui.drawSingleElement(element);
+}
+
 // Core functions
 void loadUIConfig() {
   Serial.println("Loading UI configuration from GitHub...");
   
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected, using fallback UI configuration");
-    createFallbackUIConfig();
+    Serial.println("WiFi not connected, cannot load UI configuration");
+    Serial.println("Device will retry loading UI config when WiFi is available");
     return;
   }
   
-  if (!downloadUIConfigFromGitHub()) {
-    Serial.println("Failed to download UI config from GitHub, using fallback");
-    createFallbackUIConfig();
-    return;
+  // Try to download UI config with retries
+  int maxRetries = 3;
+  for (int retry = 0; retry < maxRetries; retry++) {
+    if (retry > 0) {
+      Serial.print("Retrying UI config download (attempt ");
+      Serial.print(retry + 1);
+      Serial.print("/");
+      Serial.print(maxRetries);
+      Serial.println(")...");
+      delay(2000); // Wait 2 seconds between retries
+    }
+    
+    if (downloadUIConfigFromGitHub()) {
+      Serial.println("UI configuration loaded from GitHub successfully");
+      return;
+    }
   }
   
-  Serial.println("UI configuration loaded from GitHub successfully");
+  Serial.println("Failed to download UI config from GitHub after all retries");
+  Serial.println("Device will continue without UI configuration - screen may be blank");
 }
 
 bool initSDCard() {
-  Serial.println("=== SD Card Initialization ===");
-  Serial.print("Using HSPI bus with pins: CLK=");
-  Serial.print(SD_CLK);
-  Serial.print(", MISO=");
-  Serial.print(SD_MISO);
-  Serial.print(", MOSI=");
-  Serial.print(SD_MOSI);
-  Serial.print(", CS=");
-  Serial.println(SD_CS);
+  Serial.println("=== SD Card Initialization (Fast) ===");
   
   // End any existing SD operations
   SD.end();
-  delay(250); // Longer delay for stability
+  delay(50); // Reduced delay
   
-  // Initialize HSPI for SD card with explicit pin configuration
-  hspi.end(); // End previous HSPI session
-  delay(50);
-  hspi.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
-  Serial.println("HSPI bus initialized");
-  
-  // Set CS pin as output and high (deselected)
-  pinMode(SD_CS, OUTPUT);
-  digitalWrite(SD_CS, HIGH);
-  delay(50); // Longer delay for SD card to stabilize
-  
-  // Try different SPI frequencies and configurations with primary CS pin (15)
-  Serial.println("Attempting SD card initialization with CS pin 15...");
-  
-  // Try 1: Very slow frequency for problematic cards (400 kHz)
-  Serial.println("Trying 400 kHz (very slow)...");
-  if (SD.begin(SD_CS, hspi, 400000)) {
-    Serial.println("SD card initialized successfully with HSPI at 400 kHz (CS=15)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try 2: Slow frequency (1 MHz)
-  Serial.println("Trying 1 MHz...");
-  if (SD.begin(SD_CS, hspi, 1000000)) {
-    Serial.println("SD card initialized successfully with HSPI at 1 MHz (CS=15)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try 3: Medium frequency (4 MHz)
-  Serial.println("Trying 4 MHz...");
-  if (SD.begin(SD_CS, hspi, 4000000)) {
-    Serial.println("SD card initialized successfully with HSPI at 4 MHz (CS=15)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try 4: Default frequency
-  Serial.println("Trying default frequency...");
-  if (SD.begin(SD_CS, hspi)) {
-    Serial.println("SD card initialized successfully with HSPI at default frequency (CS=15)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try with alternative CS pin (5) - common on many ESP32 boards
-  Serial.println("=== Trying alternative CS pin (5) ===");
-  
-  // Reinitialize HSPI with alternative CS pin
-  hspi.end();
-  delay(50);
-  hspi.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS_ALT);
-  
-  pinMode(SD_CS_ALT, OUTPUT);
-  digitalWrite(SD_CS_ALT, HIGH);
-  delay(50);
-  
-  // Try 1: Very slow frequency with CS=5
-  Serial.println("Trying 400 kHz with CS=5...");
-  if (SD.begin(SD_CS_ALT, hspi, 400000)) {
-    Serial.println("SD card initialized successfully with HSPI at 400 kHz (CS=5)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try 2: Slow frequency with CS=5
-  Serial.println("Trying 1 MHz with CS=5...");
-  if (SD.begin(SD_CS_ALT, hspi, 1000000)) {
-    Serial.println("SD card initialized successfully with HSPI at 1 MHz (CS=5)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try 3: Medium frequency with CS=5
-  Serial.println("Trying 4 MHz with CS=5...");
-  if (SD.begin(SD_CS_ALT, hspi, 4000000)) {
-    Serial.println("SD card initialized successfully with HSPI at 4 MHz (CS=5)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try 4: Default frequency with CS=5
-  Serial.println("Trying default frequency with CS=5...");
-  if (SD.begin(SD_CS_ALT, hspi)) {
-    Serial.println("SD card initialized successfully with HSPI at default frequency (CS=5)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try with default VSPI (in case HSPI has issues) - CS=15
-  Serial.println("=== Trying VSPI (default SPI) with CS=15 ===");
-  if (SD.begin(SD_CS, SPI, 400000)) {
-    Serial.println("SD card initialized successfully with default VSPI at 400 kHz (CS=15)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  if (SD.begin(SD_CS, SPI, 1000000)) {
-    Serial.println("SD card initialized successfully with default VSPI at 1 MHz (CS=15)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  if (SD.begin(SD_CS)) {
-    Serial.println("SD card initialized successfully with default VSPI (CS=15)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  // Try with default VSPI - CS=5
-  Serial.println("=== Trying VSPI (default SPI) with CS=5 ===");
+  // Direct initialization with known working configuration: CS=5, 400kHz
+  Serial.println("Initializing SD card with CS=5, 400kHz...");
   if (SD.begin(SD_CS_ALT, SPI, 400000)) {
-    Serial.println("SD card initialized successfully with default VSPI at 400 kHz (CS=5)");
+    Serial.println("SD card initialized successfully");
     sdCardWorking = true;
     return true;
   }
   
-  delay(500);
-  SD.end();
-  delay(250);
-  
-  if (SD.begin(SD_CS_ALT)) {
-    Serial.println("SD card initialized successfully with default VSPI (CS=5)");
-    sdCardWorking = true;
-    return true;
-  }
-  
-  Serial.println("All SD card initialization attempts failed");
-  Serial.println("Debugging information:");
-  Serial.print("  CS pin 15 state: ");
-  Serial.println(digitalRead(SD_CS));
-  Serial.print("  CS pin 5 state: ");
-  Serial.println(digitalRead(SD_CS_ALT));
-  Serial.print("  MISO pin state: ");
-  Serial.println(digitalRead(SD_MISO));
-  Serial.println("Possible issues:");
-  Serial.println("  - SD card not inserted or faulty");
-  Serial.println("  - Wrong CS pin assignment (try different board)");
-  Serial.println("  - Wiring issues or loose connections");
-  Serial.println("  - SD card not formatted as FAT32");
-  Serial.println("  - Hardware compatibility issues");
-  Serial.println("  - SD card slot may not be connected to these pins");
-  
+  Serial.println("SD card initialization failed");
   sdCardWorking = false;
   return false;
 }
 
 bool initSDWithRetry() {
-  for (int i = 0; i < 3; i++) {
-    if (initSDCard()) {
-      return true;
-    }
-    delay(500);
-  }
-  return false;
+  // Fast single attempt - we know the configuration that works
+  return initSDCard();
 }
 
 void loadConfig() {
@@ -651,81 +489,192 @@ void handleTemperatureWheel() {
 }
 
 void updateUI() {
-  char buffer[32];
-  
-  // Update temperature display
-  snprintf(buffer, sizeof(buffer), "%.1f°", currentTemp);
-  ui.updateElement(currentScreen.c_str(), "temp_display", "text", buffer);
-  
-  snprintf(buffer, sizeof(buffer), "Target: %.1f°", targetTemp);
-  ui.updateElement(currentScreen.c_str(), "target_temp", "text", buffer);
-  
-  // Update clock
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    if (currentScreen == "main_screen") {
-      strftime(buffer, sizeof(buffer), "%H:%M", &timeinfo);
-      ui.updateElement("main_screen", "clock", "text", buffer);
-    } else {
-      strftime(buffer, sizeof(buffer), "%H:%M", &timeinfo);
-      ui.updateElement("screensaver", "large_clock", "text", buffer);
-      
-      strftime(buffer, sizeof(buffer), "%a, %d %b", &timeinfo);
-      ui.updateElement("screensaver", "date", "text", buffer);
-    }
+  // Skip UI update if no UI configuration is loaded
+  if (!uiConfig.containsKey("main_screen") && !uiConfig.containsKey("screensaver")) {
+    return;
   }
   
-  // Update heating indicator
-  if (uiConfig.containsKey(currentScreen.c_str())) {
-    JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
-    for (JsonObject element : elements) {
-      if (element["name"] == "heating_status") {
-        element["visible"] = heating;
-        break;
+  char buffer[32];
+  static float lastCurrentTemp = -999;
+  static float lastTargetTemp = -999;
+  static bool lastHeating = false;
+  static int lastRSSI = -999;
+  static String lastTime = "";
+  static bool initialized = false;
+  
+  // Force full render on first call
+  if (!initialized) {
+    ui.renderScreen(currentScreen.c_str());
+    initialized = true;
+    return;
+  }
+  
+  // Update temperature display only if changed
+  if (currentTemp != lastCurrentTemp) {
+    snprintf(buffer, sizeof(buffer), "%.1f°", currentTemp);
+    ui.updateElement(currentScreen.c_str(), "temp_display", "text", buffer);
+    lastCurrentTemp = currentTemp;
+    
+    // Find and update only the temperature element
+    if (uiConfig.containsKey(currentScreen.c_str())) {
+      JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
+      for (JsonObject element : elements) {
+        if (element["name"] == "temp_display") {
+          // Just redraw this element's area
+          drawSingleElement(element);
+          break;
+        }
       }
     }
   }
   
-  // Update WiFi strength indicator
+  // Update target temperature only if changed
+  if (targetTemp != lastTargetTemp) {
+    snprintf(buffer, sizeof(buffer), "Target: %.1f°", targetTemp);
+    ui.updateElement(currentScreen.c_str(), "target_temp", "text", buffer);
+    lastTargetTemp = targetTemp;
+    
+    // Find and update only the target temperature element
+    if (uiConfig.containsKey(currentScreen.c_str())) {
+      JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
+      for (JsonObject element : elements) {
+        if (element["name"] == "target_temp") {
+          drawSingleElement(element);
+          break;
+        }
+      }
+    }
+  }
+  
+  // Update clock only if time changed
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    String clockElementName = (currentScreen == "main_screen") ? "clock" : "large_clock";
+    strftime(buffer, sizeof(buffer), "%H:%M", &timeinfo);
+    
+    if (lastTime != String(buffer)) {
+      ui.updateElement(currentScreen.c_str(), clockElementName.c_str(), "text", buffer);
+      lastTime = String(buffer);
+      
+      // Update only the clock element
+      if (uiConfig.containsKey(currentScreen.c_str())) {
+        JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
+        for (JsonObject element : elements) {
+          if (element["name"] == clockElementName) {
+            drawSingleElement(element);
+            break;
+          }
+        }
+      }
+      
+      // Update date on screensaver
+      if (currentScreen == "screensaver") {
+        strftime(buffer, sizeof(buffer), "%a, %d %b", &timeinfo);
+        ui.updateElement("screensaver", "date", "text", buffer);
+        
+        if (uiConfig.containsKey("screensaver")) {
+          JsonArray elements = uiConfig["screensaver"]["elements"];
+          for (JsonObject element : elements) {
+            if (element["name"] == "date") {
+              drawSingleElement(element);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Update heating indicator only if changed
+  if (heating != lastHeating) {
+    if (uiConfig.containsKey(currentScreen.c_str())) {
+      JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
+      for (JsonObject element : elements) {
+        if (element["name"] == "heating_status") {
+          element["visible"] = heating;
+          drawSingleElement(element);
+          break;
+        }
+      }
+    }
+    lastHeating = heating;
+  }
+  
+  // Update WiFi strength only if significantly changed
   if (WiFi.status() == WL_CONNECTED) {
     int rssi = WiFi.RSSI();
-    snprintf(buffer, sizeof(buffer), "%d", rssi);
-    ui.updateElement(currentScreen.c_str(), "wifi_strength", "text", buffer);
-    
-    // Update WiFi icon based on signal strength
-    String wifiIcon = "wifi_full";
-    String wifiColor = "#00FF00"; // Green
-    
-    if (rssi > -50) {
-      wifiIcon = "wifi_full";
-      wifiColor = "#00FF00"; // Green
-    } else if (rssi > -60) {
-      wifiIcon = "wifi_good";
-      wifiColor = "#FFFF00"; // Yellow
-    } else if (rssi > -70) {
-      wifiIcon = "wifi_weak";
-      wifiColor = "#FF8000"; // Orange
-    } else {
-      wifiIcon = "wifi_poor";
-      wifiColor = "#FF0000"; // Red
+    if (abs(rssi - lastRSSI) > 5) { // Only update if RSSI changed by more than 5dB
+      snprintf(buffer, sizeof(buffer), "%d", rssi);
+      ui.updateElement(currentScreen.c_str(), "wifi_strength", "text", buffer);
+      
+      // Update WiFi icon based on signal strength
+      String wifiIcon = "wifi_full";
+      String wifiColor = "#00FF00"; // Green
+      
+      if (rssi > -50) {
+        wifiIcon = "wifi_full";
+        wifiColor = "#00FF00"; // Green
+      } else if (rssi > -60) {
+        wifiIcon = "wifi_good";
+        wifiColor = "#FFFF00"; // Yellow
+      } else if (rssi > -70) {
+        wifiIcon = "wifi_weak";
+        wifiColor = "#FF8000"; // Orange
+      } else {
+        wifiIcon = "wifi_poor";
+        wifiColor = "#FF0000"; // Red
+      }
+      
+      ui.updateElement(currentScreen.c_str(), "wifi_icon", "icon", wifiIcon.c_str());
+      ui.updateElement(currentScreen.c_str(), "wifi_icon", "color", wifiColor.c_str());
+      lastRSSI = rssi;
+      
+      // Update WiFi elements
+      if (uiConfig.containsKey(currentScreen.c_str())) {
+        JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
+        for (JsonObject element : elements) {
+          String name = element["name"];
+          if (name == "wifi_strength" || name == "wifi_icon") {
+            drawSingleElement(element);
+          }
+        }
+      }
     }
-    
-    ui.updateElement(currentScreen.c_str(), "wifi_icon", "icon", wifiIcon.c_str());
-    ui.updateElement(currentScreen.c_str(), "wifi_icon", "color", wifiColor.c_str());
-  } else {
+  } else if (lastRSSI != -999) {
     ui.updateElement(currentScreen.c_str(), "wifi_strength", "text", "N/A");
     ui.updateElement(currentScreen.c_str(), "wifi_icon", "icon", "wifi_off");
     ui.updateElement(currentScreen.c_str(), "wifi_icon", "color", "#FF0000");
+    lastRSSI = -999;
+    
+    // Update WiFi elements
+    if (uiConfig.containsKey(currentScreen.c_str())) {
+      JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
+      for (JsonObject element : elements) {
+        String name = element["name"];
+        if (name == "wifi_strength" || name == "wifi_icon") {
+          drawSingleElement(element);
+        }
+      }
+    }
   }
   
-  // Update firmware version display
-  if (currentScreen == "main_screen") {
+  // Update firmware version (only once)
+  static bool versionUpdated = false;
+  if (!versionUpdated && currentScreen == "main_screen") {
     String versionText = "v" + String(FIRMWARE_VERSION);
     ui.updateElement(currentScreen.c_str(), "firmware_version", "text", versionText.c_str());
+    versionUpdated = true;
+    
+    if (uiConfig.containsKey(currentScreen.c_str())) {
+      JsonArray elements = uiConfig[currentScreen.c_str()]["elements"];
+      for (JsonObject element : elements) {
+        if (element["name"] == "firmware_version") {
+          drawSingleElement(element);
+          break;
+        }
+      }
+    }
   }
-  
-  // Re-render screen
-  ui.renderScreen(currentScreen.c_str());
 }
 
 // Home Assistant API functions
@@ -853,8 +802,7 @@ void setup() {
     Serial.println("WiFi connected, loading content from GitHub...");
     loadAllContentFromGitHub();
   } else {
-    Serial.println("WiFi not connected, using fallback UI configuration");
-    createFallbackUIConfig();
+    Serial.println("WiFi not connected, UI configuration will be loaded when WiFi becomes available");
   }
   
   // Debug: Report what content was loaded
@@ -863,7 +811,7 @@ void setup() {
     JsonArray elements = uiConfig["main_screen"]["elements"];
     Serial.println(elements.size());
   } else {
-    Serial.println("0 (using fallback)");
+    Serial.println("0 (no UI config loaded yet)");
   }
   
   Serial.print("Icons cached: ");
@@ -914,12 +862,28 @@ void loop() {
   readTouch();
   handleTouch();
   
-  // Check WiFi connection
+  // Check WiFi connection and load UI config if not loaded yet
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi connection lost, attempting to reconnect...");
     WiFi.reconnect();
     delay(5000);
     return;
+  } else {
+    // If WiFi is connected but UI config is empty, try to load it
+    static bool uiConfigLoadAttempted = false;
+    if (!uiConfigLoadAttempted || (!uiConfig.containsKey("main_screen") && !uiConfig.containsKey("screensaver"))) {
+      static unsigned long lastUILoadAttempt = 0;
+      if (millis() - lastUILoadAttempt > 10000) { // Try every 10 seconds
+        lastUILoadAttempt = millis();
+        uiConfigLoadAttempted = true;
+        Serial.println("UI config missing or empty, attempting to load from GitHub...");
+        loadAllContentFromGitHub();
+        if (uiConfig.containsKey("main_screen")) {
+          Serial.println("UI config loaded successfully, re-rendering screen");
+          ui.renderScreen(currentScreen.c_str());
+        }
+      }
+    }
   }
   
   // Screensaver logic
@@ -1178,132 +1142,279 @@ bool checkForOTAUpdate() {
 bool performOTAUpdate(const char* firmwareUrl) {
   Serial.println("Starting direct OTA update from GitHub...");
   
-  // Free up memory before OTA
+  // Show initial update screen
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 50);
+  tft.println("Preparing");
+  tft.setCursor(10, 80);
+  tft.println("Update...");
+  
+  // Aggressively free memory before OTA
+  Serial.println("Freeing memory for OTA...");
   uiConfig.clear();
+  uiConfig.shrinkToFit();
+  
+  // Clear icon cache
+  for (int i = 0; i < iconCacheCount; i++) {
+    iconCache[i].name = "";
+    iconCache[i].data = "";
+  }
   iconCacheCount = 0;
+  
+  // Close SD card to free resources
+  SD.end();
+  
+  // Disable WiFi power saving
+  WiFi.setSleep(false);
+  
+  // Force garbage collection
+  Serial.print("Free heap before cleanup: ");
+  Serial.println(ESP.getFreeHeap());
+  
+  delay(2000); // Give time for cleanup
+  
+  Serial.print("Free heap after cleanup: ");
+  Serial.println(ESP.getFreeHeap());
+  
+  if (ESP.getFreeHeap() < 100000) {
+    Serial.println("Insufficient memory for OTA update");
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(10, 50);
+    tft.println("Update Failed!");
+    tft.setCursor(10, 80);
+    tft.println("Low Memory");
+    delay(3000);
+    return false;
+  }
   
   HTTPClient http;
   NetworkClientSecure client;
   
   client.setInsecure();
+  client.setTimeout(60000); // 60 second timeout
   http.setTimeout(60000);
+  http.setReuse(false); // Don't reuse connections
   http.begin(client, firmwareUrl);
   http.addHeader("User-Agent", "ESP32-HomeAssistant");
+  http.addHeader("Connection", "close");
   
+  Serial.println("Connecting to firmware server...");
   int httpCode = http.GET();
   
-  if (httpCode == HTTP_CODE_OK) {
-    int contentLength = http.getSize();
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.print("HTTP error downloading firmware: ");
+    Serial.println(httpCode);
+    http.end();
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(10, 50);
+    tft.println("Download Failed!");
+    tft.setCursor(10, 80);
+    tft.print("Error: ");
+    tft.println(httpCode);
+    delay(3000);
+    return false;
+  }
+  
+  int contentLength = http.getSize();
+  Serial.print("Firmware size: ");
+  Serial.print(contentLength);
+  Serial.println(" bytes");
+  
+  if (contentLength <= 0 || contentLength > 2000000) { // Increased size limit
+    Serial.println("Invalid firmware size");
+    http.end();
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(10, 50);
+    tft.println("Invalid Size!");
+    delay(3000);
+    return false;
+  }
+  
+  // Additional memory check
+  if (ESP.getFreeHeap() < contentLength / 4) {
+    Serial.println("Not enough free memory for OTA buffer");
+    http.end();
+    return false;
+  }
+  
+  if (!Update.begin(contentLength)) {
+    Serial.print("OTA begin failed: ");
+    Serial.println(Update.errorString());
+    http.end();
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(10, 50);
+    tft.println("Update Failed!");
+    tft.setCursor(10, 80);
+    tft.println("Setup Error");
+    delay(3000);
+    return false;
+  }
+  
+  // Show update progress on screen
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 50);
+  tft.println("Updating");
+  tft.setCursor(10, 80);
+  tft.println("Firmware...");
+  
+  WiFiClient* stream = http.getStreamPtr();
+  size_t written = 0;
+  uint8_t buffer[128]; // Smaller buffer for stability
+  int lastProgress = -1;
+  unsigned long lastYield = millis();
+  unsigned long lastProgressUpdate = millis();
+  unsigned long lastHeapCheck = millis();
+  
+  Serial.println("Starting firmware download and flash...");
+  
+  while (http.connected() && (written < contentLength)) {
+    // Very frequent yields to prevent watchdog
+    if (millis() - lastYield > 10) {
+      yield();
+      ESP.wdtFeed(); // Feed watchdog
+      lastYield = millis();
+    }
     
-    Serial.print("Firmware size: ");
-    Serial.print(contentLength);
-    Serial.println(" bytes");
-    
-    Serial.print("Free heap before OTA: ");
-    Serial.println(ESP.getFreeHeap());
-    
-    if (contentLength > 0 && contentLength < 2000000) { // Sanity check
-      if (!Update.begin(contentLength)) {
-        Serial.print("OTA begin failed: ");
-        Serial.println(Update.errorString());
+    // Check heap every 5 seconds
+    if (millis() - lastHeapCheck > 5000) {
+      Serial.print("Free heap during OTA: ");
+      Serial.println(ESP.getFreeHeap());
+      lastHeapCheck = millis();
+      
+      if (ESP.getFreeHeap() < 10000) {
+        Serial.println("Memory critically low during OTA");
+        Update.abort();
         http.end();
         return false;
       }
+    }
+    
+    size_t available = stream->available();
+    if (available > 0) {
+      size_t toRead = min(available, sizeof(buffer));
+      size_t readBytes = stream->readBytes(buffer, toRead);
       
-      // Show update progress on screen
-      tft.fillScreen(TFT_BLACK);
-      tft.setTextColor(TFT_WHITE);
-      tft.setTextSize(2);
-      tft.setCursor(10, 50);
-      tft.println("Updating");
-      tft.setCursor(10, 80);
-      tft.println("Firmware...");
-      
-      WiFiClient* stream = http.getStreamPtr();
-      size_t written = 0;
-      uint8_t buffer[512]; // Smaller buffer to save memory
-      int lastProgress = -1;
-      unsigned long lastYield = millis();
-      
-      while (http.connected() && (written < contentLength)) {
-        // Yield more frequently to prevent watchdog
-        if (millis() - lastYield > 100) {
-          yield();
-          lastYield = millis();
+      if (readBytes > 0) {
+        size_t writtenBytes = Update.write(buffer, readBytes);
+        
+        if (writtenBytes != readBytes) {
+          Serial.print("Error writing firmware data: ");
+          Serial.print(writtenBytes);
+          Serial.print(" != ");
+          Serial.println(readBytes);
+          Update.abort();
+          http.end();
+          tft.fillScreen(TFT_BLACK);
+          tft.setTextColor(TFT_RED);
+          tft.setCursor(10, 50);
+          tft.println("Write Error!");
+          delay(3000);
+          return false;
         }
         
-        size_t available = stream->available();
-        if (available > 0) {
-          size_t toRead = min(available, sizeof(buffer));
-          size_t readBytes = stream->readBytes(buffer, toRead);
-          
-          if (readBytes > 0) {
-            size_t writtenBytes = Update.write(buffer, readBytes);
+        written += writtenBytes;
+        
+        // Update progress less frequently to avoid UI lag
+        if (millis() - lastProgressUpdate > 3000) { // Every 3 seconds
+          int progress = (written * 100) / contentLength;
+          if (progress != lastProgress) {
+            lastProgress = progress;
+            lastProgressUpdate = millis();
             
-            if (writtenBytes != readBytes) {
-              Serial.println("Error writing firmware data");
-              Update.abort();
-              http.end();
-              return false;
-            }
+            Serial.print("OTA progress: ");
+            Serial.print(progress);
+            Serial.print("% (");
+            Serial.print(written);
+            Serial.print("/");
+            Serial.print(contentLength);
+            Serial.println(")");
             
-            written += writtenBytes;
+            // Update screen efficiently
+            tft.fillRect(10, 120, 300, 60, TFT_BLACK);
+            tft.setCursor(10, 120);
+            tft.print("Progress: ");
+            tft.print(progress);
+            tft.print("%");
             
-            // Update progress display less frequently
-            int progress = (written * 100) / contentLength;
-            if (progress != lastProgress && (progress % 5 == 0 || progress > 95)) {
-              lastProgress = progress;
-              
-              Serial.print("OTA progress: ");
-              Serial.print(progress);
-              Serial.println("%");
-              
-              // Update screen less frequently to save processing
-              tft.fillRect(10, 120, 220, 30, TFT_BLACK);
-              tft.setCursor(10, 120);
-              tft.print("Progress: ");
-              tft.print(progress);
-              tft.print("%");
+            // Simple progress bar
+            int barWidth = (progress * 280) / 100;
+            tft.drawRect(10, 150, 280, 20, TFT_WHITE);
+            if (barWidth > 0) {
+              tft.fillRect(11, 151, barWidth, 18, TFT_GREEN);
             }
           }
-        } else {
-          delay(10); // Small delay if no data available
         }
       }
-      
-      http.end(); // Close connection before finalizing
-      
-      if (written == contentLength && Update.end(true)) {
-        Serial.println("OTA update successful!");
-        
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(10, 50);
-        tft.setTextColor(TFT_GREEN);
-        tft.println("Update Complete!");
-        tft.setCursor(10, 80);
-        tft.setTextColor(TFT_WHITE);
-        tft.println("Restarting...");
-        
-        delay(2000);
-        ESP.restart();
-        return true;
-      } else {
-        Serial.print("OTA update failed: ");
-        Serial.println(Update.errorString());
-        Serial.print("Written: ");
-        Serial.print(written);
-        Serial.print(" Expected: ");
-        Serial.println(contentLength);
-      }
     } else {
-      Serial.println("Invalid firmware size");
+      delay(10); // Small delay if no data available
     }
-  } else {
-    Serial.print("HTTP error downloading firmware: ");
-    Serial.println(httpCode);
+    
+    // Check for timeout
+    if (millis() - lastYield > 90000) { // 90 second timeout
+      Serial.println("OTA timeout");
+      Update.abort();
+      http.end();
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_RED);
+      tft.setCursor(10, 50);
+      tft.println("Timeout!");
+      delay(3000);
+      return false;
+    }
   }
   
-  http.end();
+  http.end(); // Close connection before finalizing
+  Serial.println("Download complete, finalizing update...");
+  
+  // Additional verification
+  if (written != contentLength) {
+    Serial.print("Size mismatch: written=");
+    Serial.print(written);
+    Serial.print(" expected=");
+    Serial.println(contentLength);
+    Update.abort();
+    return false;
+  }
+  
+  if (Update.end(true)) {
+    Serial.println("OTA update successful!");
+    
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor(10, 50);
+    tft.setTextColor(TFT_GREEN);
+    tft.println("Update Complete!");
+    tft.setCursor(10, 80);
+    tft.setTextColor(TFT_WHITE);
+    tft.println("Restarting...");
+    
+    delay(3000);
+    ESP.restart();
+    return true;
+  } else {
+    Serial.print("OTA update failed: ");
+    Serial.println(Update.errorString());
+    Serial.print("Written: ");
+    Serial.print(written);
+    Serial.print(" Expected: ");
+    Serial.println(contentLength);
+    
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(10, 50);
+    tft.println("Update Failed!");
+    tft.setCursor(10, 80);
+    tft.println("Flash Error");
+    delay(3000);
+  }
+  
   return false;
 }
 
@@ -1929,142 +2040,6 @@ void testSDCardPins() {
   Serial.println("Pin test completed");
 }
 
-// Fallback UI configuration (used when SD card fails)
-void createFallbackUIConfig() {
-  Serial.println("Creating fallback UI configuration...");
-  
-  // Clear existing config
-  uiConfig.clear();
-  
-  // Create basic main screen
-  JsonObject mainScreen = uiConfig.createNestedObject("main_screen");
-  mainScreen["background"] = "#000000";
-  
-  JsonArray elements = mainScreen.createNestedArray("elements");
-  
-  // Temperature display
-  JsonObject tempDisplay = elements.createNestedObject();
-  tempDisplay["name"] = "temp_display";
-  tempDisplay["type"] = "label";
-  tempDisplay["x"] = 160;
-  tempDisplay["y"] = 80;
-  tempDisplay["text"] = "21.0°";
-  tempDisplay["font_size"] = 32;
-  tempDisplay["color"] = "#FFFFFF";
-  tempDisplay["align"] = "center";
-  
-  // Target temperature
-  JsonObject targetTemp = elements.createNestedObject();
-  targetTemp["name"] = "target_temp";
-  targetTemp["type"] = "label";
-  targetTemp["x"] = 160;
-  targetTemp["y"] = 120;
-  targetTemp["text"] = "Target: 21.0°";
-  targetTemp["font_size"] = 16;
-  targetTemp["color"] = "#AAAAAA";
-  targetTemp["align"] = "center";
-  
-  // Increase button
-  JsonObject incButton = elements.createNestedObject();
-  incButton["name"] = "temp_increase";
-  incButton["type"] = "button";
-  incButton["x"] = 220;
-  incButton["y"] = 100;
-  incButton["width"] = 60;
-  incButton["height"] = 40;
-  incButton["text"] = "+";
-  incButton["bg_color"] = "#333333";
-  incButton["text_color"] = "#FFFFFF";
-  incButton["action"] = "temp_increase";
-  
-  // Decrease button
-  JsonObject decButton = elements.createNestedObject();
-  decButton["name"] = "temp_decrease";
-  decButton["type"] = "button";
-  decButton["x"] = 100;
-  decButton["y"] = 100;
-  decButton["width"] = 60;
-  decButton["height"] = 40;
-  decButton["text"] = "-";
-  decButton["bg_color"] = "#333333";
-  decButton["text_color"] = "#FFFFFF";
-  decButton["action"] = "temp_decrease";
-  
-  // Clock
-  JsonObject clock = elements.createNestedObject();
-  clock["name"] = "clock";
-  clock["type"] = "label";
-  clock["x"] = 160;
-  clock["y"] = 20;
-  clock["text"] = "00:00";
-  clock["font_size"] = 16;
-  clock["color"] = "#888888";
-  clock["align"] = "center";
-  
-  // WiFi strength
-  JsonObject wifiStrength = elements.createNestedObject();
-  wifiStrength["name"] = "wifi_strength";
-  wifiStrength["type"] = "label";
-  wifiStrength["x"] = 300;
-  wifiStrength["y"] = 20;
-  wifiStrength["text"] = "N/A";
-  wifiStrength["font_size"] = 12;
-  wifiStrength["color"] = "#888888";
-  wifiStrength["align"] = "right";
-  
-  // Firmware version
-  JsonObject fwVersion = elements.createNestedObject();
-  fwVersion["name"] = "firmware_version";
-  fwVersion["type"] = "label";
-  fwVersion["x"] = 300;
-  fwVersion["y"] = 220;
-  fwVersion["text"] = "v" + String(FIRMWARE_VERSION);
-  fwVersion["font_size"] = 10;
-  fwVersion["color"] = "#444444";
-  fwVersion["align"] = "right";
-  
-  // SD card error indicator
-  JsonObject sdError = elements.createNestedObject();
-  sdError["name"] = "sd_error";
-  sdError["type"] = "label";
-  sdError["x"] = 20;
-  sdError["y"] = 220;
-  sdError["text"] = "SD ERROR";
-  sdError["font_size"] = 10;
-  sdError["color"] = "#FF0000";
-  sdError["align"] = "left";
-  
-  // Create basic screensaver
-  JsonObject screensaver = uiConfig.createNestedObject("screensaver");
-  screensaver["background"] = "#000000";
-  
-  JsonArray ssElements = screensaver.createNestedArray("elements");
-  
-  // Large clock for screensaver
-  JsonObject largeClock = ssElements.createNestedObject();
-  largeClock["name"] = "large_clock";
-  largeClock["type"] = "label";
-  largeClock["x"] = 160;
-  largeClock["y"] = 100;
-  largeClock["text"] = "00:00";
-  largeClock["font_size"] = 48;
-  largeClock["color"] = "#FFFFFF";
-  largeClock["align"] = "center";
-  
-  // Date for screensaver
-  JsonObject date = ssElements.createNestedObject();
-  date["name"] = "date";
-  date["type"] = "label";
-  date["x"] = 160;
-  date["y"] = 140;
-  date["text"] = "Mon, 01 Jan";
-  date["font_size"] = 16;
-  date["color"] = "#888888";
-  date["align"] = "center";
-  
-  Serial.println("Fallback UI configuration created");
-}
-
 // Create fallback configuration when SD card fails
 void createFallbackConfig() {
   Serial.println("Creating fallback configuration...");
@@ -2179,15 +2154,12 @@ bool downloadIconsFromGitHub() {
 void loadAllContentFromGitHub() {
   Serial.println("Loading all content from GitHub...");
   
-  // Download UI config
-  if (!downloadUIConfigFromGitHub()) {
-    Serial.println("Using fallback UI config");
-    createFallbackUIConfig();
-  }
+  // Download UI config with retries
+  loadUIConfig();
   
   // Download icons
   if (!downloadIconsFromGitHub()) {
-    Serial.println("Icon download failed, using fallback icons");
+    Serial.println("Icon download failed, using hardcoded fallback icons");
   }
   
   Serial.println("GitHub content loading completed");
