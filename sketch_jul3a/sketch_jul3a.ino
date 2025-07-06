@@ -1279,7 +1279,7 @@ bool performOTAUpdate(const char* firmwareUrl) {
     // Very frequent yields to prevent watchdog
     if (millis() - lastYield > 10) {
       yield();
-      ESP.wdtFeed(); // Feed watchdog
+      delay(1); // Brief delay to prevent watchdog timeout
       lastYield = millis();
     }
     
